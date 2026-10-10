@@ -22,6 +22,7 @@
 #define INCLUDED_SDSL_ITERATORS
 
 #include <iterator>
+#include <type_traits>
 
 namespace sdsl
 {
@@ -179,7 +180,11 @@ template<typename t_F>
 struct random_access_container {
     typedef int_vector<>::size_type                               size_type;
     typedef int_vector<>::difference_type                         difference_type;
-    typedef typename std::result_of<t_F(size_type)>::type         value_type;
+#if __cplusplus >= 201703L
+    typedef typename std::invoke_result<t_F, size_type>::type      value_type;
+#else
+    typedef typename std::result_of<t_F(size_type)>::type           value_type;
+#endif
     typedef random_access_const_iterator<random_access_container> iterator_type;
 
     t_F f;

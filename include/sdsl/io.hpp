@@ -30,6 +30,7 @@
 #include <vector>
 #include <iostream>
 #include <cctype>
+#include <type_traits>
 
 namespace sdsl
 {

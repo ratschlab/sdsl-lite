@@ -1,4 +1,5 @@
 #include "sdsl/int_vector.hpp"
+#include "sdsl/iterators.hpp"
 #include "sdsl/util.hpp"
 #include "gtest/gtest.h"
 #include <vector>
@@ -13,6 +14,18 @@ typedef sdsl::int_vector<>::size_type size_type;
 typedef sdsl::int_vector<>::value_type value_type;
 
 std::string temp_dir;
+
+TEST(RandomAccessContainerTest, CallableValues)
+{
+    auto square = [](size_type i) { return i * i; };
+    sdsl::random_access_container<decltype(square)> values(square, 4);
+    static_assert(std::is_same<decltype(values)::value_type, size_type>::value,
+                  "Container value_type must match its callable's return type");
+    EXPECT_EQ(4, values.size());
+    EXPECT_EQ(9, values[3]);
+    EXPECT_EQ(4, *(values.begin() + 2));
+    EXPECT_EQ(4, values.end() - values.begin());
+}
 
 // The fixture for testing class int_vector.
 class IntVectorTest : public ::testing::Test
