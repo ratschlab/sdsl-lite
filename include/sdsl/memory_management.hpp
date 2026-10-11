@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +34,7 @@
 #include <sdsl/config.hpp>
 #include <sdsl/memory_tracking.hpp>
 #include <sdsl/ram_fs.hpp>
+#include <sdsl/util.hpp>
 
 #include <sys/mman.h> // IWYU pragma: keep
 
@@ -894,7 +896,7 @@ public:
     {
         if (v.m_mmap_context)
         {
-            size_t const bytes = ((capacity + 64) >> 6) << 3;
+            size_t const bytes = (((capacity + 63) >> 6) + 1) * sizeof(uint64_t);
             uint64_t * data = alloc_mem(bytes);
             if (!data)
                 throw std::bad_alloc();
