@@ -117,6 +117,51 @@ public:
     select_support_mcl<t_b, t_pat_len> & operator=(select_support_mcl const & ss);
     select_support_mcl<t_b, t_pat_len> & operator=(select_support_mcl &&);
     void swap(select_support_mcl<t_b, t_pat_len> & ss);
+    template <typename archive_t>
+    void CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
+    {
+        ar(CEREAL_NVP(m_arg_cnt));
+        ar(CEREAL_NVP(m_logn));
+        ar(CEREAL_NVP(m_logn2));
+        ar(CEREAL_NVP(m_logn4));
+        if (m_arg_cnt)
+        {
+            ar(CEREAL_NVP(m_superblock));
+            ar(CEREAL_NVP(m_miniblock));
+            for (size_type i = 0; i < (m_arg_cnt + 4095) / 4096; ++i)
+            {
+                if (m_block)
+                    ar(cereal::make_nvp("block", m_block[i]));
+                else
+                {
+                    int_vector<> block(miniblock_size(i), 0, m_block_width[i]);
+                    for (size_type j = 0; j < block.size(); ++j)
+                        block[j] = miniblock_value(i, j);
+                    ar(cereal::make_nvp("block", block));
+                }
+            }
+        }
+    }
+
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
+    void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
+    {
+        initData();
+        ar(CEREAL_NVP(m_arg_cnt));
+        ar(CEREAL_NVP(m_logn));
+        ar(CEREAL_NVP(m_logn2));
+        ar(CEREAL_NVP(m_logn4));
+        if (m_arg_cnt)
+        {
+            ar(CEREAL_NVP(m_superblock));
+            ar(CEREAL_NVP(m_miniblock));
+            size_type const count = (m_arg_cnt + 4095) / 4096;
+            m_block = new int_vector<>[count];
+            for (size_type i = 0; i < count; ++i)
+                ar(cereal::make_nvp("block", m_block[i]));
+        }
+    }
+
     bool operator==(select_support_mcl const & other) const
     {
         if (m_arg_cnt != other.m_arg_cnt || m_superblock != other.m_superblock || m_miniblock != other.m_miniblock)

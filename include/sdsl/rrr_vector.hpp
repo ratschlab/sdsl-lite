@@ -450,6 +450,26 @@ public:
         return iterator(this, size());
     }
 
+    template <typename archive_t>
+    void CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
+    {
+        ar(CEREAL_NVP(m_size));
+        ar(CEREAL_NVP(m_bt));
+        ar(CEREAL_NVP(m_btnr));
+        ar(CEREAL_NVP(m_btnrp));
+        ar(CEREAL_NVP(m_rank));
+    }
+
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
+    void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
+    {
+        ar(CEREAL_NVP(m_size));
+        ar(CEREAL_NVP(m_bt));
+        ar(CEREAL_NVP(m_btnr));
+        ar(CEREAL_NVP(m_btnrp));
+        ar(CEREAL_NVP(m_rank));
+    }
+
     bool operator==(rrr_vector const & other) const
     {
         return m_size == other.m_size && m_bt == other.m_bt && m_btnr == other.m_btnr && m_btnrp == other.m_btnrp
@@ -609,6 +629,14 @@ public:
         structure_tree::add_size(child, 0);
         return 0;
     }
+
+    template <typename archive_t>
+    void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
+    {}
+
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
+    void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
+    {}
 
     bool operator==(rank_support_rrr const & other) const
     {
@@ -811,6 +839,14 @@ public:
         structure_tree::add_size(child, 0);
         return 0;
     }
+
+    template <typename archive_t>
+    void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
+    {}
+
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
+    void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
+    {}
 
     bool operator==(select_support_rrr const & other) const
     {
