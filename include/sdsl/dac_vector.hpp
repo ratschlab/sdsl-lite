@@ -17,6 +17,7 @@
 
 #include <sdsl/bits.hpp>
 #include <sdsl/cereal.hpp>
+#include <sdsl/dac_vector_dp.hpp>
 #include <sdsl/int_vector.hpp>
 #include <sdsl/int_vector_buffer.hpp>
 #include <sdsl/io.hpp>
