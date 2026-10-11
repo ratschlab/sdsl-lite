@@ -459,7 +459,7 @@ public:
         ar(CEREAL_NVP(m_high_0_select));
     }
 
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
     {
         ar(CEREAL_NVP(m_size));
@@ -603,7 +603,7 @@ public:
     void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
     {}
 
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
     {}
 
@@ -729,7 +729,7 @@ public:
     void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
     {}
 
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
     {}
 
@@ -959,7 +959,7 @@ public:
         ar(CEREAL_NVP(m_rank1));
     }
 
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
     {
         ar(CEREAL_NVP(m_pointer));
