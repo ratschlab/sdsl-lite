@@ -10,6 +10,7 @@
 
 #include <iostream>
 #include <stdint.h>
+#include <type_traits>
 #include <utility>
 
 #include <sdsl/bits.hpp>
@@ -29,7 +30,18 @@ private:
     uint128_t m_high;
 
 public:
-    inline uint256_t(uint64_t lo = 0, uint64_t mid = 0, uint128_t high = 0) : m_lo(lo), m_mid(mid), m_high(high)
+    uint256_t() : m_lo(0), m_mid(0), m_high(0)
+    {}
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t(T lo) : m_lo(uint128_t(lo)), m_mid(uint128_t(lo) >> 64), m_high(0)
+    {}
+
+    // Retain the lab API's two 128-bit halves.
+    uint256_t(uint128_t lo, uint128_t high) : m_lo(lo), m_mid(lo >> 64), m_high(high)
+    {}
+
+    uint256_t(uint64_t lo, uint64_t mid, uint128_t high) : m_lo(lo), m_mid(mid), m_high(high)
     {}
 
     inline uint256_t(uint256_t const & x) : m_lo(x.m_lo), m_mid(x.m_mid), m_high(x.m_high)
@@ -185,6 +197,71 @@ public:
         return *this = *this >> x;
     }
 
+    inline uint256_t operator~() const
+    {
+        return uint256_t(~m_lo, ~m_mid, ~m_high);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t operator+(T x) const
+    {
+        return *this + uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t operator-(T x) const
+    {
+        return *this - uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t operator|(T x) const
+    {
+        return *this | uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t operator&(T x) const
+    {
+        return *this & uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator==(T x) const
+    {
+        return *this == uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator!=(T x) const
+    {
+        return *this != uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator<(T x) const
+    {
+        return *this < uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator<=(T x) const
+    {
+        return *this <= uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator>(T x) const
+    {
+        return *this > uint256_t(x);
+    }
+
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    bool operator>=(T x) const
+    {
+        return *this >= uint256_t(x);
+    }
+
     inline uint256_t operator<<(int x) const
     {
         if (x >= 128)
@@ -240,12 +317,10 @@ public:
         return uint256_t(lo, mid, (uint128_t(high_hi) << 64) | high_lo);
     }
 
-    inline uint256_t & operator=(uint64_t const & x)
+    template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+    uint256_t & operator=(T x)
     {
-        m_high = 0;
-        m_mid = 0;
-        m_lo = x;
-        return *this;
+        return *this = uint256_t(x);
     }
 
     inline bool operator==(uint256_t const & x) const
@@ -331,7 +406,17 @@ public:
         }
     }
 
-    inline operator uint64_t()
+    explicit operator bool() const
+    {
+        return m_lo || m_mid || m_high;
+    }
+
+    explicit operator uint128_t() const
+    {
+        return (uint128_t(m_mid) << 64) | m_lo;
+    }
+
+    inline operator uint64_t() const
     {
         return m_lo;
     }

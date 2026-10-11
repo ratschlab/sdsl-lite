@@ -31,4 +31,23 @@ TEST(uint256_t_test, shifts)
     }
 }
 
+TEST(uint256_t_test, lab_integer_operations)
+{
+    auto const low = (sdsl::uint128_t{1} << 100) | 7;
+    auto const high = sdsl::uint128_t{1} << 73;
+    sdsl::uint256_t const value(low, high);
+    EXPECT_EQ(low, static_cast<sdsl::uint128_t>(value));
+    EXPECT_EQ(high, static_cast<sdsl::uint128_t>(value >> 128));
+    EXPECT_TRUE(static_cast<bool>(single_bit(200)));
+    EXPECT_FALSE(static_cast<bool>(sdsl::uint256_t{}));
+    EXPECT_EQ(sdsl::uint256_t(low), value & low);
+    EXPECT_EQ(sdsl::uint256_t(low, high), single_bit(201) | low);
+    EXPECT_EQ(sdsl::uint256_t{}, value & ~value);
+    sdsl::uint256_t assigned;
+    assigned = low;
+    EXPECT_EQ(sdsl::uint256_t(low), assigned);
+    EXPECT_EQ(sdsl::uint256_t(8), (value & uint64_t{7}) + 1);
+    EXPECT_GT(value, low);
+}
+
 } // namespace
