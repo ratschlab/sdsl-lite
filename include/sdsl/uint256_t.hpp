@@ -424,6 +424,42 @@ public:
     }
 };
 
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator==(T number, uint256_t const & x)
+{
+    return x.operator==(number);
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator!=(T number, uint256_t const & x)
+{
+    return x.operator!=(number);
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator<(T number, uint256_t const & x)
+{
+    return x.operator>(number);
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator<=(T number, uint256_t const & x)
+{
+    return x.operator>=(number);
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator>(T number, uint256_t const & x)
+{
+    return x.operator<(number);
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T> || std::is_same_v<T, uint128_t>, int> = 0>
+inline bool operator>=(T number, uint256_t const & x)
+{
+    return x.operator<=(number);
+}
+
 inline std::ostream & operator<<(std::ostream & os, uint256_t const & x)
 {
     uint64_t X[4] = {(uint64_t)(x.m_high >> 64), (uint64_t)x.m_high, x.m_mid, x.m_lo};

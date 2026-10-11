@@ -48,6 +48,10 @@ TEST(uint256_t_test, lab_integer_operations)
     EXPECT_EQ(sdsl::uint256_t(low), assigned);
     EXPECT_EQ(sdsl::uint256_t(8), (value & uint64_t{7}) + 1);
     EXPECT_GT(value, low);
+    EXPECT_TRUE(0ULL != single_bit(200));
+    EXPECT_TRUE(0ULL < single_bit(200));
+    EXPECT_FALSE(0ULL == single_bit(200));
+    EXPECT_FALSE(0ULL >= single_bit(200));
 }
 
 } // namespace
