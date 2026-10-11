@@ -266,7 +266,7 @@ private:
         if constexpr (t_width != 0)
         {
             size_type const bit_size{size * t_width};
-            if (bit_size > m_capacity || m_data == nullptr)
+            if (m_mmap_context || bit_size > m_capacity || m_data == nullptr)
             {
                 // start with 64 bit if vector has no capacity
                 size_type new_capacity = std::max<size_type>(m_capacity, 64u);
@@ -280,7 +280,7 @@ private:
         else
         {
             size_type const bit_size{size * m_width};
-            if (bit_size > m_capacity || m_data == nullptr)
+            if (m_mmap_context || bit_size > m_capacity || m_data == nullptr)
             {
                 // start with 64 bit if vector has no capacity
                 size_type new_capacity = std::max<size_type>(m_capacity, 64u);

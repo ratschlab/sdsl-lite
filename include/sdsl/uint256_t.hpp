@@ -262,7 +262,8 @@ public:
         return *this >= uint256_t(x);
     }
 
-    inline uint256_t operator<<(int x) const
+    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    inline uint256_t operator<<(T x) const
     {
         if (x >= 128)
         {
@@ -290,7 +291,8 @@ public:
         return uint256_t(lo, mid, (uint128_t(high_hi) << 64) | high_lo);
     }
 
-    inline uint256_t operator>>(int x) const
+    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    inline uint256_t operator>>(T x) const
     {
         if (x >= 128)
         {

@@ -301,6 +301,7 @@ public:
             m_wrapper.m_data = (uint64_t *)(m_mapped_data + m_data_offset);
         }
         m_wrapper.m_size = bit_size;
+        m_wrapper.m_capacity = new_size_in_bytes * 8;
     }
 
     void resize(size_type const size)
