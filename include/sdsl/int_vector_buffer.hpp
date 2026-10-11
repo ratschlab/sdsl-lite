@@ -302,6 +302,16 @@ public:
         return (m_buffersize * width()) / 8;
     }
 
+    //! Change the buffer size in bytes, preserving pending writes.
+    void buffersize(uint64_t bytes)
+    {
+        write_block();
+        bytes = std::max<uint64_t>(bytes, 8);
+        m_buffersize = ((bytes * 8 + width() - 1) / width() + 7) / 8 * 8;
+        m_buffer = int_vector<t_width>(m_buffersize, 0, width());
+        read_block(0);
+    }
+
     //! Returns whether state of underlying streams are good
     bool good() const
     {

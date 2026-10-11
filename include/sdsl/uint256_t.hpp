@@ -121,14 +121,14 @@ public:
         //			return uint256_t(lo, mid, m_high + x.m_high + (mid >> 64));
     }
 
-    inline uint256_t operator+(uint256_t const & x)
+    inline uint256_t operator+(uint256_t const & x) const
     {
         uint128_t lo = ((uint128_t)m_lo) + x.m_lo;
         uint128_t mid = (uint128_t)m_mid + x.m_mid + (lo >> 64);
         return uint256_t(lo, mid, m_high + x.m_high + (mid >> 64));
     }
 
-    inline uint256_t operator-(uint256_t const & x)
+    inline uint256_t operator-(uint256_t const & x) const
     {
         //			add two's complement of x
         uint128_t lo = (uint128_t)m_lo + (~x.m_lo) + (uint128_t)1ULL;
@@ -147,7 +147,7 @@ public:
         return *this;
     }
 
-    inline uint256_t operator|(uint256_t const & x)
+    inline uint256_t operator|(uint256_t const & x) const
     {
         return uint256_t(m_lo | x.m_lo, m_mid | x.m_mid, m_high | x.m_high);
     }
@@ -160,7 +160,7 @@ public:
         return *this;
     }
 
-    inline uint256_t operator&(uint256_t const & x)
+    inline uint256_t operator&(uint256_t const & x) const
     {
         return uint256_t(m_lo & x.m_lo, m_mid & x.m_mid, m_high & x.m_high);
     }
@@ -169,6 +169,21 @@ public:
      * return m_lo & x;
      * }
      */
+
+    inline uint256_t & operator&=(uint256_t const & x)
+    {
+        return *this = *this & x;
+    }
+
+    inline uint256_t & operator<<=(int x)
+    {
+        return *this = *this << x;
+    }
+
+    inline uint256_t & operator>>=(int x)
+    {
+        return *this = *this >> x;
+    }
 
     inline uint256_t operator<<(int x) const
     {
