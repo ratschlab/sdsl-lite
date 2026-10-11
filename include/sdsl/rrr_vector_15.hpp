@@ -1,31 +1,37 @@
-// Copyright (c) 2016, the SDSL Project Authors.  All rights reserved.
-// Please see the AUTHORS file for details.  Use of this source code is governed
-// by a BSD license that can be found in the LICENSE file.
-/*!\file rrr_vector.hpp
- * \brief rrr_vector.hpp contains a specialisation of the sdsl::rrr_vector class,
- * with block size k=15 and lookup table access.
- * \author Simon Gog
- */
+/* sdsl - succinct data structures library
+    Copyright (C) 2011-2013 Simon Gog
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see http://www.gnu.org/licenses/ .
+*/
+/*! \file rrr_vector.hpp
+   \brief rrr_vector.hpp contains a specialisation of the sdsl::rrr_vector class,
+          with block size k=15 and lookup table access.
+   \author Simon Gog
+*/
 #ifndef INCLUDED_SDSL_RRR_VECTOR_15
 #define INCLUDED_SDSL_RRR_VECTOR_15
 
 #include <algorithm> // for next_permutation
-#include <assert.h>
 #include <iostream>
-#include <stdint.h>
-#include <string>
-#include <utility>
 #include <vector>
 
-#include <sdsl/bits.hpp>
-#include <sdsl/cereal.hpp>
-#include <sdsl/int_vector.hpp>
-#include <sdsl/io.hpp>
-#include <sdsl/iterators.hpp>
-#include <sdsl/rrr_vector.hpp>
-#include <sdsl/sdsl_concepts.hpp>
-#include <sdsl/structure_tree.hpp>
-#include <sdsl/util.hpp>
+#include "int_vector.hpp"
+#include "iterators.hpp"
+#include "rrr_helper.hpp" // for binomial helper class
+#include "rrr_vector.hpp"
+#include "util.hpp"
+
 //! Namespace for the succinct data structure library
 namespace sdsl
 {
@@ -36,8 +42,7 @@ namespace sdsl
  *  * m_nr_to_bin: 64 kB = (2^15 entries x 2 bytes)
  *  * m_bin_to_nr: 64 kB = (2^15 entries x 2 bytes)
  */
-template <typename T = void>
-class binomial15_impl
+class binomial15
 {
 public:
     typedef uint32_t number_type;
@@ -113,12 +118,6 @@ public:
     }
 };
 
-// initialize the inner class
-template <typename T>
-typename binomial15_impl<T>::impl binomial15_impl<T>::iii;
-
-using binomial15 = binomial15_impl<>;
-
 //! A specialization of the rrr_vector class for a block_size of 15.
 /*!
  *   \tparam t_rac  Random access integer vector. Use to store the block types.
@@ -130,7 +129,7 @@ using binomial15 = binomial15_impl<>;
  *    block type array between the last sampled position and the
  *    destination block. That can be done by using bit-parallelism on
  *    64-bit words.
- */
+*/
 template <class t_rac, uint16_t t_k>
 class rrr_vector<15, t_rac, t_k>
 {
@@ -167,59 +166,15 @@ private:
     int_vector<> m_rank;  // Sample rank values.
 
 public:
-    rac_type const & bt = m_bt;
-    bit_vector const & btnr = m_btnr;
-
     //! Default constructor
-    /*!\param k Store rank samples and pointers each k-th blocks.
-     */
-    rrr_vector() {};
-
-    //! Copy constructor
-    rrr_vector(rrr_vector const & v) :
-        m_size(v.m_size),
-        m_bt(v.m_bt),
-        m_btnr(v.m_btnr),
-        m_btnrp(v.m_btnrp),
-        m_rank(v.m_rank)
+    rrr_vector()
     {}
-
-    //! Move constructor
-    rrr_vector(rrr_vector && v)
-    {
-        *this = std::move(v);
-    }
-
-    //! Assignment operator
-    rrr_vector & operator=(rrr_vector const & v)
-    {
-        if (this != &v)
-        {
-            rrr_vector tmp(v);
-            *this = std::move(tmp);
-        }
-        return *this;
-    }
-
-    //! Move assignment
-    rrr_vector & operator=(rrr_vector && v)
-    {
-        if (this != &v)
-        {
-            m_size = v.m_size;
-            m_bt = std::move(v.m_bt);
-            m_btnr = std::move(v.m_btnr);
-            m_btnrp = std::move(v.m_btnrp);
-            m_rank = std::move(v.m_rank);
-        }
-        return *this;
-    }
 
     //! Constructor
     /*!
-     *  \param bv Uncompressed bitvector.
-     *  \param k  Store rank samples and pointers each k-th blocks.
-     */
+        *  \param bv Uncompressed bitvector.
+        *  \param k  Store rank samples and pointers each k-th blocks.
+        */
     rrr_vector(bit_vector const & bv)
     {
         m_size = bv.size();
@@ -250,9 +205,7 @@ public:
                               0,
                               bits::hi(sum_rank) + 1);
         //                                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        //                                                                      only add a finishing block, if the last
-        //                                                                      block of the superblock is not a dummy
-        //                                                                      block
+        //                                                                      only add a finishing block, if the last block of the superblock is not a dummy block
         // (2) calculate block type numbers and pointers into btnr and rank samples
         pos = 0;
         i = 0;
@@ -298,10 +251,23 @@ public:
         m_bt = rac_type(std::move(bt_array));
     }
 
+    //! Swap method
+    void swap(rrr_vector & rrr)
+    {
+        if (this != &rrr)
+        {
+            std::swap(m_size, rrr.m_size);
+            m_bt.swap(rrr.m_bt);
+            m_btnr.swap(rrr.m_btnr);
+            m_btnrp.swap(rrr.m_btnrp);
+            m_rank.swap(rrr.m_rank);
+        }
+    }
+
     //! Accessing the i-th element of the original bit_vector
-    /*!\param i An index i with \f$ 0 \leq i < size()  \f$.
-     * \return The i-th bit of the original bit_vector
-     */
+    /*! \param i An index i with \f$ 0 \leq i < size()  \f$.
+           \return The i-th bit of the original bit_vector
+        */
     value_type operator[](size_type i) const
     {
         size_type bt_idx = i / block_size;
@@ -340,18 +306,18 @@ public:
 
         uint32_t btnr = m_btnr.get_int(btnrp, bi_type::space_for_bt(i_bt));
 
-        uint8_t off = (uint8_t)(i % block_size); // i - bt_idx*block_size;
+        uint8_t off = (uint8_t)(i % block_size); //i - bt_idx*block_size;
         return (bi_type::nr_to_bin(i_bt, btnr) >> off) & (uint32_t)1;
     }
 
     //! Get the integer value of the binary string of length len starting at position idx.
-    /*!\param idx Starting index of the binary representation of the integer.
-     *  \param len Length of the binary representation of the integer. Default value is 64.
-     *   \returns The integer value of the binary string of length len starting at position idx.
-     *
-     *  \pre idx+len-1 in [0..size()-1]
-     *  \pre len in [1..64]
-     */
+    /*! \param idx Starting index of the binary representation of the integer.
+         *  \param len Length of the binary representation of the integer. Default value is 64.
+         *   \returns The integer value of the binary string of length len starting at position idx.
+         *
+         *  \pre idx+len-1 in [0..size()-1]
+         *  \pre len in [1..64]
+         */
     uint64_t get_int(size_type idx, uint8_t len = 64) const
     {
         uint64_t res = 0;
@@ -429,26 +395,6 @@ public:
         m_rank.load(in);
     }
 
-    template <typename archive_t>
-    void CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
-    {
-        ar(CEREAL_NVP(m_size));
-        ar(CEREAL_NVP(m_bt));
-        ar(CEREAL_NVP(m_btnr));
-        ar(CEREAL_NVP(m_btnrp));
-        ar(CEREAL_NVP(m_rank));
-    }
-
-    template <typename archive_t>
-    void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
-    {
-        ar(CEREAL_NVP(m_size));
-        ar(CEREAL_NVP(m_bt));
-        ar(CEREAL_NVP(m_btnr));
-        ar(CEREAL_NVP(m_btnrp));
-        ar(CEREAL_NVP(m_rank));
-    }
-
     iterator begin() const
     {
         return iterator(this, 0);
@@ -458,21 +404,11 @@ public:
     {
         return iterator(this, size());
     }
-
-    bool operator==(rrr_vector const & v) const
-    {
-        return m_size == v.m_size && m_bt == v.m_bt && m_btnr == v.m_btnr && m_btnrp == v.m_btnrp && m_rank == v.m_rank;
-    }
-
-    bool operator!=(rrr_vector const & v) const
-    {
-        return !(*this == v);
-    }
 };
 
 //! rank_support for the specialized rrr_vector class of block size 15.
 /*! The first template parameter is the bit pattern of size one.
- */
+*/
 template <uint8_t t_b, class t_rac, uint16_t t_k>
 class rank_support_rrr<t_b, 15, t_rac, t_k>
 {
@@ -493,26 +429,26 @@ public:
 
 private:
     bit_vector_type const * m_v; //!< Pointer to the rank supported rrr_vector
-                                 // TODO cache for sequential ranks
-                                 //        mutable size_type m_last_bt;
-                                 //        mutable size_type m_last_w; // store the last decoded word
-                                 //        uint16_t m_space_for_bt[256];
+    // TODO cache for sequential ranks
+    //        mutable size_type m_last_bt;
+    //        mutable size_type m_last_w; // store the last decoded word
+    //        uint16_t m_space_for_bt[256];
 
 public:
     //! Standard constructor
-    /*!\param v Pointer to the rrr_vector, which should be supported
-     */
+    /*! \param v Pointer to the rrr_vector, which should be supported
+         */
     explicit rank_support_rrr(bit_vector_type const * v = nullptr)
     {
         set_vector(v);
     }
 
     //! Answers rank queries
-    /*!\param i Argument for the length of the prefix v[0..i-1], with \f$0\leq i \leq size()\f$.
-     * \returns Number of 1-bits in the prefix [0..i-1] of the original bit_vector.
-     * \par Time complexity
-     * \f$ \Order{ sample\_rate of the rrr\_vector} \f$
-     */
+    /*! \param i Argument for the length of the prefix v[0..i-1], with \f$0\leq i \leq size()\f$.
+           \returns Number of 1-bits in the prefix [0..i-1] of the original bit_vector.
+           \par Time complexity
+                \f$ \Order{ sample\_rate of the rrr\_vector} \f$
+        */
     size_type const rank(size_type i) const
     {
         size_type bt_idx = i / bit_vector_type::block_size;
@@ -610,7 +546,7 @@ public:
             btnrp += bi_type::space_for_bt(r & 0x0F);
             ++j;
         }
-        uint8_t off = i % bit_vector_type::block_size; // i - bt_idx*bit_vector_type::block_size;
+        uint8_t off = i % bit_vector_type::block_size; //i - bt_idx*bit_vector_type::block_size;
         if (!off)
         { // needed for special case: if i=size() is a multiple of block_size
             // the access to m_bt would cause a invalid memory access
@@ -649,6 +585,9 @@ public:
         return *this;
     }
 
+    void swap(rank_support_rrr &)
+    {}
+
     //! Load the data structure from a stream and set the supported vector.
     void load(std::istream &, bit_vector_type const * v = nullptr)
     {
@@ -661,24 +600,6 @@ public:
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         structure_tree::add_size(child, 0);
         return 0;
-    }
-
-    template <typename archive_t>
-    void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
-    {}
-
-    template <typename archive_t>
-    void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
-    {}
-
-    bool operator==(rank_support_rrr const & other) const noexcept
-    {
-        return *m_v == *other.m_v;
-    }
-
-    bool operator!=(rank_support_rrr const & other) const noexcept
-    {
-        return !(*this == other);
     }
 };
 
@@ -823,6 +744,9 @@ public:
         return *this;
     }
 
+    void swap(select_support_rrr &)
+    {}
+
     void load(std::istream &, bit_vector_type const * v = nullptr)
     {
         set_vector(v);
@@ -833,24 +757,6 @@ public:
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         structure_tree::add_size(child, 0);
         return 0;
-    }
-
-    template <typename archive_t>
-    void CEREAL_SAVE_FUNCTION_NAME(archive_t &) const
-    {}
-
-    template <typename archive_t>
-    void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
-    {}
-
-    bool operator==(select_support_rrr const & other) const noexcept
-    {
-        return *m_v == *other.m_v;
-    }
-
-    bool operator!=(select_support_rrr const & other) const noexcept
-    {
-        return !(*this == other);
     }
 };
 

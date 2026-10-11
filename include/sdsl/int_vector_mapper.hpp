@@ -86,7 +86,7 @@ private:
                     osfstream out(m_file_name, std::ios::in);
                     if (out)
                     {
-                        out.seekp(0, std::ios::beg);
+                        out.seekp(m_data_offset - sizeof(uint64_t) - (t_width == 0), std::ios::beg);
                         int_vector<t_width>::write_header(m_wrapper.m_size, m_wrapper.m_width, out);
 
                         //    out.seekp(0, std::ios::end);
@@ -121,6 +121,7 @@ private:
             // Mapped storage was released above; an unmapped wrapper owns its buffer.
             m_wrapper.m_data = nullptr;
             m_wrapper.m_size = 0;
+            m_wrapper.m_capacity = 0;
         }
         if (m_fd != -1)
         {
@@ -169,7 +170,10 @@ public:
         int_vector_mapper(cache_file_name(key, config))
     {}
 
-    int_vector_mapper(std::string const filename, bool is_plain = false, bool delete_on_close = false) :
+    int_vector_mapper(std::string const filename,
+                      bool is_plain = false,
+                      bool delete_on_close = false,
+                      uint64_t file_offset = 0) :
         m_data_offset(0),
         m_file_name(filename),
         m_delete_on_close(delete_on_close)
@@ -184,7 +188,8 @@ public:
             }
             if (!is_plain)
             {
-                m_data_offset = int_vector<t_width>::read_header(size_in_bits, int_width, f);
+                f.seekg(file_offset);
+                m_data_offset = file_offset + int_vector<t_width>::read_header(size_in_bits, int_width, f);
             }
         }
 
@@ -232,8 +237,14 @@ public:
         }
 
         m_wrapper.m_size = size_in_bits;
+        m_wrapper.m_capacity = ((size_in_bits + 63) >> 6) << 6;
         free(m_wrapper.m_data);
         m_wrapper.m_data = (uint64_t *)(m_mapped_data + m_data_offset);
+    }
+
+    int_vector<t_width> const & wrapper() const
+    {
+        return m_wrapper;
     }
 
     std::string file_name() const

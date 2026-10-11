@@ -14,6 +14,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -891,6 +892,19 @@ public:
     template <class t_vec>
     static void resize(t_vec & v, typename t_vec::size_type const capacity)
     {
+        if (v.m_mmap_context)
+        {
+            size_t const bytes = ((capacity + 64) >> 6) << 3;
+            uint64_t * data = alloc_mem(bytes);
+            if (!data)
+                throw std::bad_alloc();
+            std::memcpy(data, v.m_data, ((std::min(v.m_size, capacity) + 63) >> 6) << 3);
+            v.m_mmap_context.reset();
+            v.m_data = data;
+            v.m_capacity = ((capacity + 63) >> 6) << 6;
+            memory_monitor::record(bytes - 8);
+            return;
+        }
         uint64_t old_capacity_in_bytes = ((v.m_capacity + 63) >> 6) << 3;
         uint64_t new_capacity_in_bytes = ((capacity + 63) >> 6) << 3;
         bool do_realloc = old_capacity_in_bytes != new_capacity_in_bytes;
@@ -919,6 +933,13 @@ public:
     template <class t_vec>
     static void clear(t_vec & v)
     {
+        if (v.m_mmap_context)
+        {
+            v.m_mmap_context.reset();
+            v.m_data = nullptr;
+            v.m_capacity = 0;
+            return;
+        }
         int64_t size_in_bytes = ((v.m_size + 63) >> 6) << 3;
         // remove mem
         memory_manager::free_mem(v.m_data);
@@ -1062,6 +1083,103 @@ public:
 #endif
         return -1;
     }
+};
+
+class mmap_context
+{
+public:
+    explicit mmap_context(std::string const & filename) : m_file_name(filename)
+    {
+        m_file_size_bytes = util::file_size(m_file_name);
+
+        // open backend file depending on mode
+        m_fd = memory_manager::open_file_for_mmap(m_file_name, std::ios_base::in);
+        if (m_fd == -1)
+        {
+            throw std::runtime_error("mmap_context: can't open file " + m_file_name + " for mmap. "
+                                     + std::string(util::str_from_errno()));
+        }
+
+        // mmap data
+        m_mapped_data =
+            reinterpret_cast<uint8_t *>(memory_manager::mmap_file(m_fd, m_file_size_bytes, std::ios_base::in));
+        if (m_mapped_data == nullptr)
+        {
+            memory_manager::close_file_for_mmap(m_fd);
+            m_fd = -1;
+            throw std::runtime_error("mmap_context: mmap error. " + std::string(util::str_from_errno()));
+        }
+    }
+
+    mmap_context(mmap_context const &) = delete;
+    mmap_context & operator=(mmap_context const &) = delete;
+
+    ~mmap_context()
+    {
+        if (m_mapped_data)
+        {
+            auto ret = memory_manager::mem_unmap(m_fd, m_mapped_data, m_file_size_bytes);
+            if (ret != 0)
+            {
+                std::cerr << "mmap_context: error unmapping file '" << m_file_name << "': " << ret << std::endl;
+            }
+        }
+        if (m_fd != -1)
+        {
+            auto ret = memory_manager::close_file_for_mmap(m_fd);
+            if (ret != 0)
+            {
+                std::cerr << "mmap_context: error closing file mapping'" << m_file_name << "': " << ret << std::endl;
+            }
+        }
+    }
+
+    inline uint8_t * data() const
+    {
+        return m_mapped_data;
+    }
+    inline uint64_t file_size_bytes() const
+    {
+        return m_file_size_bytes;
+    }
+    std::string const & filename() const
+    {
+        return m_file_name;
+    }
+
+private:
+    std::string m_file_name;
+    uint8_t * m_mapped_data = nullptr;
+    uint64_t m_file_size_bytes = 0;
+    int m_fd = -1;
+};
+
+class mmap_ifstream : public std::ifstream
+{
+public:
+    mmap_ifstream(std::string const & filename, std::ios_base::openmode mode = std::ios_base::in) :
+        std::ifstream(filename, mode)
+    {
+        if (good())
+            m_mmap_context = std::make_shared<mmap_context>(filename);
+    }
+
+    virtual ~mmap_ifstream() override
+    {}
+
+    virtual std::shared_ptr<mmap_context> get_mmap_context()
+    {
+        return m_mmap_context;
+    }
+    std::string const & get_filename() const
+    {
+        if (!m_mmap_context)
+            throw std::runtime_error("mmap_ifstream: stream not open");
+        return m_mmap_context->filename();
+    }
+
+private:
+    std::shared_ptr<mmap_context> m_mmap_context;
 };
 
 #undef ALIGNMENT

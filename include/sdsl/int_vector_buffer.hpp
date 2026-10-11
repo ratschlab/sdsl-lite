@@ -1,23 +1,40 @@
-// Copyright (c) 2016, the SDSL Project Authors.  All rights reserved.
-// Please see the AUTHORS file for details.  Use of this source code is governed
-// by a BSD license that can be found in the LICENSE file.
-/*!\file int_vector_buffer.hpp
- * \brief int_vector_buffer.hpp contains the sdsl::int_vector_buffer class.
- * \author Maike Zwerger, Timo Beller and Simon Gog
- */
+/* sdsl - succinct data structures library
+    Copyright (C) 2008-2013 Simon Gog
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see http://www.gnu.org/licenses/ .
+*/
+/*! \file int_vector_buffer.hpp
+    \brief int_vector_buffer.hpp contains the sdsl::int_vector_buffer class.
+    \author Maike Zwerger, Timo Beller and Simon Gog
+*/
 #ifndef INCLUDED_INT_VECTOR_BUFFER
 #define INCLUDED_INT_VECTOR_BUFFER
 
 #include <cassert>
+#include <chrono>
+#include <ctime>
 #include <fstream>
-#include <iterator>
-#include <stdint.h>
+#include <iostream>
+#include <memory>
+#include <stdio.h>
 #include <string>
+#include <thread>
 
-#include <sdsl/int_vector.hpp>
-#include <sdsl/ram_fs.hpp>
-#include <sdsl/sfstream.hpp>
-#include <sdsl/util.hpp>
+#include "int_vector.hpp"
+#include "iterators.hpp"
+#include "ram_fs.hpp"
+#include "sfstream.hpp"
 
 namespace sdsl
 {
@@ -27,23 +44,27 @@ class int_vector_buffer
 {
 public:
     class iterator;
-
     typedef typename int_vector<t_width>::difference_type difference_type;
     typedef typename int_vector<t_width>::value_type value_type;
-    typedef typename int_vector<t_width>::size_type size_type;
 
 private:
     static_assert(t_width <= 64, "int_vector_buffer: width must be at most 64 bits.");
-    sdsl::isfstream m_ifile;
-    sdsl::osfstream m_ofile;
+    std::unique_ptr<sdsl::isfstream> m_ifile{new sdsl::isfstream()};
+    std::unique_ptr<sdsl::osfstream> m_ofile{new sdsl::osfstream()};
+    std::streampos m_start;
     std::string m_filename;
     int_vector<t_width> m_buffer;
     bool m_need_to_write = false;
     // length of int_vector header in bytes: 0 for plain, 8 for int_vector<t_width> (0 < t_width), 9 for int_vector<0>
-    uint64_t m_offset = 0;
+    std::streampos m_offset = 0;
     uint64_t m_buffersize = 8; // in elements! m_buffersize*width() must be a multiple of 8!
     uint64_t m_size = 0;       // size of int_vector_buffer
     uint64_t m_begin = 0;      // number in elements
+
+    void throw_error(std::string const & message) const
+    {
+        throw std::ios_base::failure("int_vector_buffer " + m_filename + " error: " + message);
+    }
 
     //! Read block containing element at index idx.
     void read_block(uint64_t const idx)
@@ -55,18 +76,16 @@ private:
         }
         else
         {
-            m_ifile.seekg(m_offset + (m_begin * width()) / 8);
-            assert(m_ifile.good());
-            m_ifile.read((char *)m_buffer.data(), (m_buffersize * width()) / 8);
-            if ((uint64_t)m_ifile.gcount() < (m_buffersize * width()) / 8)
-            {
-                m_ifile.clear();
-            }
-            assert(m_ifile.good());
-            for (uint64_t i = m_size - m_begin; i < m_buffersize; ++i)
-            {
-                m_buffer[i] = 0;
-            }
+            std::streampos pos = m_offset + static_cast<std::streampos>(m_begin * width() / 8);
+            m_ifile->seekg(pos);
+            if (!m_ifile->good())
+                throw_error("seekg error");
+            if (m_size - m_begin < m_buffersize)
+                util::set_to_value(m_buffer, 0);
+            uint64_t wb = std::min(m_buffersize * width(), (m_size - m_begin) * width() + 7) / 8;
+            m_ifile->read(reinterpret_cast<char *>(m_buffer.data()), wb);
+            if (!m_ifile->good())
+                throw_error("read block error");
         }
     }
 
@@ -75,20 +94,40 @@ private:
     {
         if (m_need_to_write)
         {
-            m_ofile.seekp(m_offset + (m_begin * width()) / 8);
-            assert(m_ofile.good());
-            if (m_begin + m_buffersize >= m_size)
+            assert(m_ofile->is_open());
+            std::streampos pos = m_offset + static_cast<std::streampos>(m_begin * width() / 8);
+            int attempt = 0;
+            while (true)
             {
-                // last block in file
-                uint64_t wb = ((m_size - m_begin) * width() + 7) / 8;
-                m_ofile.write((char *)m_buffer.data(), wb);
+                try
+                {
+                    m_ofile->seekp(pos);
+                    if (!m_ofile->good())
+                        throw_error("seekp error");
+                    uint64_t wb = std::min(m_buffersize * width(), (m_size - m_begin) * width() + 7) / 8;
+                    m_ofile->write(reinterpret_cast<char const *>(m_buffer.data()), wb);
+                    if (!m_ofile->good())
+                        throw_error("write block error");
+                    m_ofile->flush();
+                    if (!m_ofile->good())
+                        throw_error("flush block error");
+                    break;
+                }
+                catch (...)
+                {
+                    if (++attempt > 100)
+                        throw;
+                    std::time_t current_time = std::time(nullptr);
+                    std::string current_time_str(std::ctime(&current_time));
+                    current_time_str.pop_back(); // remove '\n'
+                    std::cerr << "[" + current_time_str + "] Warning: int_vector_buffer write block (file " + m_filename
+                                     + ", attempt " + std::to_string(attempt) + ") failed, will try again in 10 sec"
+                              << std::endl;
+                    m_ofile.reset(new sdsl::osfstream());
+                    std::this_thread::sleep_for(std::chrono::seconds(10));
+                    m_ofile->open(m_filename, std::ios::in | std::ios::out | std::ios::binary);
+                }
             }
-            else
-            {
-                m_ofile.write((char *)m_buffer.data(), (m_buffersize * width()) / 8);
-            }
-            m_ofile.flush();
-            assert(m_ofile.good());
             m_need_to_write = false;
         }
     }
@@ -110,8 +149,8 @@ private:
     void write(uint64_t const idx, uint64_t const value)
     {
         assert(is_open());
-        if (!m_ofile.is_open())
-            throw std::ios_base::failure("int_vector_buffer: not open for writing");
+        if (!m_ofile->is_open())
+            throw_error("not open for writing");
         // If idx is not in current block, write current block and load needed block
         if (idx < m_begin or m_begin + m_buffersize <= idx)
         {
@@ -129,110 +168,103 @@ private:
 public:
     //! Constructor.
     int_vector_buffer()
-    {
-        m_buffer = int_vector<t_width>();
-    }
+    {}
 
     //! Constructor for int_vector_buffer.
-    /*!\param filename   File that contains the data read from / written to.
-     *  \param mode       Openmode:
-     *                    std::ios::in opens an existing file for reading,
-     *                    std::ios::out creates a new file for reading and writing,
-     *                    std::ios::in | std::ios::out opens an existing file for reading and writing.
-     *  \param buffersize Buffersize in bytes. This has to be a multiple of 8, if not the next multiple of 8 will be
-     * taken \param int_width  The width of each integer. \param is_plain   If false (default) the file will be
-     * interpreted as int_vector. If true the file will be interpreted as plain array with t_width bits per integer. In
-     * second case (is_plain==true), t_width must be 8, 16, 32 or 64.
-     */
+    /*! \param filename   File that contains the data read from / written to.
+         *  \param mode       Openmode:
+         *                    std::ios::in opens an existing file (that must exist already),
+         *                    std::ios::out creates a new file (that may exist already).
+         *  \param buffer_size Buffersize in bytes. This has to be a multiple of 8, if not the next multiple of 8 will be taken
+         *  \param int_width  The width of each integer.
+         *  \param is_plain   If false (default) the file will be interpreted as int_vector.
+         *                    If true the file will be interpreted as plain array with t_width bits per integer.
+         *                    In second case (is_plain==true), t_width must be 8, 16, 32 or 64.
+         */
     int_vector_buffer(std::string const filename,
                       std::ios::openmode mode = std::ios::in,
-                      uint64_t const buffer_size = 1024 * 1024,
+                      uint64_t buffer_size = 1024 * 1024,
                       uint8_t const int_width = t_width,
-                      bool const is_plain = false)
+                      bool const is_plain = false,
+                      uint64_t const file_offset = 0)
     {
         m_filename = filename;
         assert(!(mode & std::ios::app));
         mode &= ~std::ios::app;
+        mode &= ~std::ios::ate;
         m_buffer.width(int_width);
         if (is_plain)
         {
-            m_offset = 0;
             // is_plain is only allowed with width() in {8, 16, 32, 64}
             assert(8 == width() or 16 == width() or 32 == width() or 64 == width());
         }
         else
         {
-            m_offset = 8; // TODO: make this dependent on header size of int_vector<t_width>
+            m_offset = t_width ? 8 : 9;
         }
 
         // Open file for IO
+        m_start = file_offset;
+        m_offset += file_offset;
         if (mode & std::ios::out)
         {
-            m_ofile.open(m_filename, mode | std::ios::binary);
-            assert(m_ofile.good());
+            m_ofile->open(m_filename, mode | (m_start ? std::ios::in : std::ios::openmode(0)) | std::ios::binary);
+            if (!m_ofile)
+                throw_error("Could not open file for write");
         }
-        m_ifile.open(m_filename, std::ios::in | std::ios::binary);
-        assert(m_ifile.good());
+
+        m_ifile->open(m_filename, std::ios::in | std::ios::binary);
+        if (!m_ifile->good())
+            throw_error("Could not open file for read");
+        m_ifile->seekg(m_start);
+        if (!m_ifile->good())
+            throw_error("seekg failed");
+
         if (mode & std::ios::in)
         {
+            // load size and width
             uint64_t size = 0;
             if (is_plain)
             {
-                m_ifile.seekg(0, std::ios_base::end);
-                size = m_ifile.tellg() * 8;
+                m_ifile->seekg(0, std::ios_base::end);
+                size = (m_ifile->tellg() - m_start) * 8;
             }
             else
             {
                 uint8_t width = 0;
-                int_vector<0>::read_header(size, width, m_ifile);
+                int_vector<t_width>::read_header(size, width, *m_ifile);
+                if (!m_ifile->good())
+                    throw_error("Could not read header");
                 m_buffer.width(width);
             }
-            assert(m_ifile.good());
             m_size = size / width();
         }
-        buffersize(buffer_size);
+
+        if (buffer_size < 8u)
+            buffer_size = 8; // at least 8 bytes
+        m_buffersize = ((buffer_size * 8 + width() - 1) / width() + 7) / 8 * 8;
+        m_buffer.resize(m_buffersize);
+        read_block(0);
     }
 
     //! Move constructor.
-    int_vector_buffer(int_vector_buffer && ivb) :
-        m_filename(std::move(ivb.m_filename)),
-        m_buffer(std::move(ivb.m_buffer)),
-        m_need_to_write(ivb.m_need_to_write),
-        m_offset(ivb.m_offset),
-        m_buffersize(ivb.m_buffersize),
-        m_size(ivb.m_size),
-        m_begin(ivb.m_begin)
+    int_vector_buffer(int_vector_buffer && ivb)
     {
-        bool const open = ivb.m_ifile.is_open();
-        bool const writable = ivb.m_ofile.is_open();
-        if (open)
-            ivb.m_ifile.close();
-        if (writable)
-            ivb.m_ofile.close();
-        if (open)
-        {
-            m_ifile.open(m_filename, std::ios::in | std::ios::binary);
-            assert(m_ifile.good());
-        }
-        if (writable)
-        {
-            m_ofile.open(m_filename, std::ios::in | std::ios::out | std::ios::binary);
-            assert(m_ofile.good());
-        }
-        // set ivb to default-constructor state
-        ivb.m_filename = "";
-        ivb.m_buffer = int_vector<t_width>();
-        ivb.m_need_to_write = false;
-        ivb.m_offset = 0;
-        ivb.m_buffersize = 8;
-        ivb.m_size = 0;
-        ivb.m_begin = 0;
+        swap(ivb);
     }
 
     //! Destructor.
     ~int_vector_buffer()
     {
-        close();
+        try
+        {
+            close();
+        }
+        catch (std::exception const & e)
+        {
+            std::cerr << "Error in int_vector_buffer destructor: " << e.what() << std::endl;
+            assert(false && "Error in int_vector_buffer destructor");
+        }
     }
 
     //! Move assignment operator.
@@ -241,38 +273,7 @@ public:
         if (this == &ivb)
             return *this;
         close();
-        bool const open = ivb.m_ifile.is_open();
-        bool const writable = ivb.m_ofile.is_open();
-        if (open)
-            ivb.m_ifile.close();
-        if (writable)
-            ivb.m_ofile.close();
-        m_filename = ivb.m_filename;
-        if (open)
-        {
-            m_ifile.open(m_filename, std::ios::in | std::ios::binary);
-            assert(m_ifile.good());
-        }
-        if (writable)
-        {
-            m_ofile.open(m_filename, std::ios::in | std::ios::out | std::ios::binary);
-            assert(m_ofile.good());
-        }
-        // assign the values of ivb to this
-        m_buffer = (int_vector<t_width> &&)ivb.m_buffer;
-        m_need_to_write = ivb.m_need_to_write;
-        m_offset = ivb.m_offset;
-        m_buffersize = ivb.m_buffersize;
-        m_size = ivb.m_size;
-        m_begin = ivb.m_begin;
-        // set ivb to default-constructor state
-        ivb.m_filename = "";
-        ivb.m_buffer = int_vector<t_width>();
-        ivb.m_need_to_write = false;
-        ivb.m_offset = 0;
-        ivb.m_buffersize = 8;
-        ivb.m_size = 0;
-        ivb.m_begin = 0;
+        swap(ivb);
         return *this;
     }
 
@@ -301,58 +302,61 @@ public:
         return (m_buffersize * width()) / 8;
     }
 
-    //! Set the buffersize in bytes
-    void buffersize(uint64_t buffersize)
-    {
-        if (0ULL == buffersize)
-            buffersize = 8;
-        write_block();
-        if (0 == (buffersize * 8) % width())
-        {
-            m_buffersize =
-                buffersize * 8 / width(); // m_buffersize might not be multiple of 8, but m_buffersize*width() is.
-        }
-        else
-        {
-            uint64_t element_buffersize =
-                (buffersize * 8) / width() + 1; // one more element than fits into given buffersize in byte
-            m_buffersize = element_buffersize + 7 - (element_buffersize + 7) % 8; // take next multiple of 8
-        }
-        m_buffer = int_vector<t_width>(m_buffersize, 0, width());
-        if (0 != m_buffersize)
-            read_block(0);
-    }
-
     //! Returns whether state of underlying streams are good
-    bool good()
+    bool good() const
     {
-        return m_ifile.good() and (!m_ofile.is_open() or m_ofile.good());
+        return m_ifile->good() and (!m_ofile->is_open() || m_ofile->good());
     }
 
     //! Returns whether underlying streams are currently associated to a file
-    bool is_open()
+    bool is_open() const
     {
-        return m_ifile.is_open();
+        return m_ifile->is_open();
+    }
+
+    //! Flush data to file
+    void flush()
+    {
+        assert(m_ofile->is_open());
+        write_block();
+        if (m_start < m_offset)
+        { // in case of int_vector, write header and trailing zeros
+            uint64_t size = m_size * width();
+            m_ofile->seekp(m_start);
+            int_vector<t_width>::write_header(size, width(), *m_ofile);
+            int64_t wb = (size + 7) / 8;
+            if (wb % 8)
+            {
+                m_ofile->seekp(m_offset.operator+(wb));
+                m_ofile->write("\0\0\0\0\0\0\0\0", 8 - wb % 8);
+            }
+        }
+        m_ofile->flush();
+        if (!m_ofile->good())
+            throw_error("flush failed");
     }
 
     //! Delete all content and set size to 0
     void reset()
     {
-        if (!m_ofile.is_open())
-            throw std::ios_base::failure("int_vector_buffer: not open for writing");
+        if (!m_ofile->is_open())
+            throw_error("not open for writing");
         // reset file
-        assert(m_ifile.good());
-        assert(m_ofile.good());
-        m_ifile.close();
-        m_ofile.close();
-        m_ofile.open(m_filename, std::ios::out | std::ios::binary);
-        assert(m_ofile.good());
-        m_ifile.open(m_filename, std::ios::in | std::ios::binary);
-        assert(m_ifile.good());
-        assert(m_ofile.good());
+        assert(m_ifile->good());
+        assert(m_ofile->good());
+        m_ifile->close();
+        m_ofile->close();
+        m_ofile->open(m_filename, std::ios::out | std::ios::binary);
+        if (!m_ofile)
+            throw_error("Could not open file for write after reset");
+        m_ifile->open(m_filename, std::ios::in | std::ios::binary);
+        if (!m_ifile)
+            throw_error("Could not open file for read after reset");
         // reset member variables
         m_need_to_write = false;
         m_size = 0;
+        m_offset -= m_start;
+        m_start = 0;
         // reset buffer
         read_block(0);
     }
@@ -361,12 +365,12 @@ public:
     class reference;
 
     //! [] operator
-    /*!\param i Index the i-th integer of length width().
-     *  \return A reference to the i-th integer of length width().
-     */
-    reference operator[](uint64_t idx)
+    /*! \param idx Index the i-th integer of length width().
+         *  \return A reference to the i-th integer of length width().
+         */
+    reference operator[](uint64_t idx) const
     {
-        return reference(this, idx);
+        return reference(const_cast<int_vector_buffer<t_width> *>(this), idx);
     }
 
     //! Appends the given element value to the end of the int_vector_buffer
@@ -377,43 +381,35 @@ public:
 
     //! Close the int_vector_buffer.
     /*! It is not possible to read from / write into the int_vector_buffer after calling this method
-     *  \param remove_file If true, the underlying file will be removed on closing.
-     */
+         *  \param remove_file If true, the underlying file will be removed on closing.
+         */
     void close(bool remove_file = false)
     {
         if (is_open())
         {
-            if (!remove_file && m_ofile.is_open())
+            if (m_ofile->is_open())
             {
-                write_block();
-                if (0 < m_offset)
-                { // in case of int_vector, write header and trailing zeros
-                    uint64_t size = m_size * width();
-                    m_ofile.seekp(0, std::ios::beg);
-                    int_vector<t_width>::write_header(size, width(), m_ofile);
-                    assert(m_ofile.good());
-                    uint64_t wb = (size + 7) / 8;
-                    if (wb % 8)
-                    {
-                        m_ofile.seekp(m_offset + wb);
-                        assert(m_ofile.good());
-                        m_ofile.write("\0\0\0\0\0\0\0\0", 8 - wb % 8);
-                        assert(m_ofile.good());
-                    }
-                }
+                if (!remove_file)
+                    flush();
+                m_ofile->close();
+                if (!m_ofile->good())
+                    throw_error("Could not close write stream");
             }
-            m_ifile.close();
-            assert(m_ifile.good());
-            if (m_ofile.is_open())
-            {
-                m_ofile.close();
-                assert(m_ofile.good());
-            }
+            m_ifile->close();
+            if (!m_ifile->good())
+                throw_error("Could not close read stream");
             if (remove_file)
             {
                 sdsl::remove(m_filename);
             }
         }
+        m_filename = "";
+        m_buffer = int_vector<t_width>();
+        m_need_to_write = false;
+        m_offset = 0;
+        m_buffersize = 8;
+        m_size = 0;
+        m_begin = 0;
     }
 
     iterator begin()
@@ -424,6 +420,33 @@ public:
     iterator end()
     {
         return iterator(*this, size());
+    }
+
+    //! Swap method for int_vector_buffer.
+    void swap(int_vector_buffer<t_width> & ivb)
+    {
+        if (this != &ivb)
+        {
+            std::swap(m_ifile, ivb.m_ifile);
+            std::swap(m_ofile, ivb.m_ofile);
+            std::swap(m_start, ivb.m_start);
+            std::swap(m_filename, ivb.m_filename);
+            std::swap(m_buffer, ivb.m_buffer);
+            std::swap(m_need_to_write, ivb.m_need_to_write);
+            std::swap(m_offset, ivb.m_offset);
+            std::swap(m_buffersize, ivb.m_buffersize);
+            std::swap(m_size, ivb.m_size);
+            std::swap(m_begin, ivb.m_begin);
+        }
+    }
+
+    iterator begin() const
+    {
+        return iterator(const_cast<int_vector_buffer &>(*this), 0);
+    }
+    iterator end() const
+    {
+        return iterator(const_cast<int_vector_buffer &>(*this), size());
     }
 
     class reference
@@ -450,7 +473,7 @@ public:
         }
 
         //! Assignment operator for write operations
-        reference & operator=(uint64_t const & val)
+        reference & operator=(uint64_t val)
         {
             m_int_vector_buffer->write(m_idx, val);
             return *this;
@@ -459,10 +482,8 @@ public:
         //! Assignment operator
         reference & operator=(reference const & x)
         {
-            return *this = (uint64_t)(x);
-        };
-
-        reference(reference const &) = default;
+            return *this = static_cast<uint64_t>(x);
+        }
 
         //! Prefix increment of the proxy object
         reference & operator++()
@@ -475,8 +496,8 @@ public:
         //! Postfix increment of the proxy object
         uint64_t operator++(int)
         {
-            uint64_t val = (uint64_t)*this;
-            ++(*this);
+            uint64_t val = *this;
+            m_int_vector_buffer->write(m_idx, val + 1);
             return val;
         }
 
@@ -491,8 +512,8 @@ public:
         //! Postfix decrement of the proxy object
         uint64_t operator--(int)
         {
-            uint64_t val = (uint64_t)*this;
-            --(*this);
+            uint64_t val = *this;
+            m_int_vector_buffer->write(m_idx, val - 1);
             return val;
         }
 
@@ -514,30 +535,30 @@ public:
 
         bool operator==(reference const & x) const
         {
-            return (uint64_t)*this == (uint64_t)x;
+            return uint64_t(*this) == uint64_t(x);
         }
 
         bool operator<(reference const & x) const
         {
-            return (uint64_t)*this < (uint64_t)x;
+            return uint64_t(*this) < uint64_t(x);
         }
     };
 
     class iterator
     {
     private:
-        int_vector_buffer<t_width> * m_ivb{nullptr};
+        int_vector_buffer<t_width> & m_ivb;
         uint64_t m_idx = 0;
 
     public:
         using iterator_category = std::random_access_iterator_tag;
-        using value_type = sdsl::int_vector_buffer<t_width>::value_type;
-        using difference_type = sdsl::int_vector_buffer<t_width>::difference_type;
+        using value_type = int_vector_buffer<t_width>::value_type;
+        using difference_type = int_vector_buffer<t_width>::difference_type;
         using pointer = value_type *;
-        using reference = sdsl::int_vector_buffer<t_width>::reference;
+        using reference = int_vector_buffer<t_width>::reference;
 
         iterator() = delete;
-        iterator(int_vector_buffer<t_width> & ivb, uint64_t idx = 0) : m_ivb(&ivb), m_idx(idx)
+        iterator(int_vector_buffer<t_width> & ivb, uint64_t idx = 0) : m_ivb(ivb), m_idx(idx)
         {}
 
         iterator & operator++()
@@ -568,8 +589,7 @@ public:
 
         reference operator*() const
         {
-            assert(m_ivb != nullptr);
-            return (*m_ivb)[m_idx];
+            return m_ivb[m_idx];
         }
 
         iterator & operator+=(difference_type i)
@@ -602,60 +622,15 @@ public:
 
         bool operator==(iterator const & it) const
         {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
-            return m_idx == it.m_idx;
+            return &m_ivb == &(it.m_ivb) and m_idx == it.m_idx;
         }
 
         bool operator!=(iterator const & it) const
         {
             return !(*this == it);
         }
-
-        bool operator<(iterator const & it) const
+        inline difference_type operator-(iterator const & it)
         {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
-            return m_idx < it.m_idx;
-        }
-
-        bool operator>(iterator const & it) const
-        {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
-            return m_idx > it.m_idx;
-        }
-
-        bool operator<=(iterator const & it) const
-        {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
-            return m_idx <= it.m_idx;
-        }
-
-        bool operator>=(iterator const & it) const
-        {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
-            return m_idx >= it.m_idx;
-        }
-
-        difference_type operator-(iterator const & it) const
-        {
-            // assert that iterator point to the same int_vector_buffer
-            assert(m_ivb);
-            assert(it.m_ivb);
-            assert(m_ivb == it.m_ivb);
             return (m_idx - it.m_idx);
         }
     };

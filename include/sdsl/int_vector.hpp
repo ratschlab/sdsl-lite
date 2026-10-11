@@ -255,6 +255,7 @@ private:
     size_type m_capacity;   //!< Number of bits reserved by int_vector.
     uint64_t * m_data;      //!< Pointer to the memory for the bits.
     int_width_type m_width; //!< Width of the integers.
+    std::shared_ptr<mmap_context> m_mmap_context;
 
     // Hidden, since number of bits (size) does not go well together with int value.
     void bit_resize(size_type const size, value_type const value);
@@ -678,6 +679,29 @@ public:
     //! Load the int_vector for a stream.
     void load(std::istream & in);
 
+    //! Load a view of a legacy-format vector while retaining its mapped file.
+    size_t load(std::shared_ptr<mmap_context> const & context, size_t offset)
+    {
+        size_t const header = sizeof(uint64_t) + (t_width == 0);
+        if (offset > context->file_size_bytes() || header > context->file_size_bytes() - offset)
+            throw std::runtime_error("int_vector: header outside mapped file");
+        uint64_t bits;
+        std::memcpy(&bits, context->data() + offset, sizeof(bits));
+        uint8_t const w = t_width ? t_width : context->data()[offset + sizeof(bits)];
+        if (!w || w > 64 || bits > uint64_t(-1) - 63)
+            throw std::runtime_error("int_vector: invalid mapped header");
+        size_t const bytes = ((bits + 63) >> 6) << 3;
+        if (bytes > context->file_size_bytes() - offset - header)
+            throw std::runtime_error("int_vector: data outside mapped file");
+        memory_manager::clear(*this);
+        m_mmap_context = context;
+        m_size = bits;
+        m_capacity = ((bits + 63) >> 6) << 6;
+        width(w);
+        m_data = reinterpret_cast<uint64_t *>(context->data() + offset + header);
+        return header + bytes;
+    }
+
     /* For cereal we need to define different versions of the load and save function depending on whether we want
      * binary data or text (XML/JSON) data.
      * See https://github.com/USCiLab/cereal/blob/master/include/cereal/types/vector.hpp for an example.
@@ -883,36 +907,19 @@ public:
     //! Read the size and int_width of a int_vector
     static size_t read_header(int_vector_size_type & size, int_width_type & int_width, std::istream & in)
     {
-        uint64_t width_and_size = 0;
-        read_member(width_and_size, in);
-        size = width_and_size & bits::lo_set[56];
-        uint8_t read_int_width = (uint8_t)(width_and_size >> 56);
-        if (t_width == 0)
-        {
-            int_width = read_int_width;
-        }
-        if (t_width > 0 and t_width != read_int_width)
-        {
-            std::cerr << "Warning: Width of int_vector<" << (size_t)t_width << ">";
-            std::cerr << " was specified as " << (size_type)read_int_width << std::endl;
-            std::cerr << "Length is " << size << " bits" << std::endl;
-        }
-        return sizeof(width_and_size);
+        read_member(size, in);
+        if constexpr (t_width == 0)
+            read_member(int_width, in);
+        return sizeof(size) + (t_width == 0);
     }
 
     //! Write the size and int_width of a int_vector
     static uint64_t write_header(uint64_t size, uint8_t int_width, std::ostream & out)
     {
-        if (t_width > 0)
-        {
-            if (t_width != int_width)
-            {
-                std::cout << "Warning: writing width=" << (size_type)int_width << " != fixed " << (size_type)t_width
-                          << std::endl;
-            }
-        }
-        uint64_t width_and_size = (((uint64_t)int_width) << 56) | size;
-        return write_member(width_and_size, out);
+        uint64_t bytes = write_member(size, out);
+        if constexpr (t_width == 0)
+            bytes += write_member(int_width, out);
+        return bytes;
     }
 
     struct raw_wrapper
@@ -1600,7 +1607,8 @@ inline int_vector<t_width>::int_vector(int_vector && v) :
     m_size(v.m_size),
     m_capacity(v.m_capacity),
     m_data(v.m_data),
-    m_width(v.m_width)
+    m_width(v.m_width),
+    m_mmap_context(std::move(v.m_mmap_context))
 {
     v.m_data = nullptr; // ownership of v.m_data now transfered
     v.m_size = 0;
@@ -1646,6 +1654,7 @@ int_vector<t_width> & int_vector<t_width>::operator=(int_vector && v)
         m_data = v.m_data; // assign new memory
         m_width = v.m_width;
         m_capacity = v.m_capacity;
+        m_mmap_context = std::move(v.m_mmap_context);
         v.m_data = nullptr;
         v.m_size = 0;
         v.m_capacity = 0;
@@ -1670,7 +1679,7 @@ void swap(int_vector<t_width> & v1, int_vector<t_width> & v2) noexcept
 template <uint8_t t_width>
 void int_vector<t_width>::bit_resize(size_type const size)
 {
-    if (size > m_capacity || m_data == nullptr)
+    if (m_mmap_context || size > m_capacity || m_data == nullptr)
     {
         memory_manager::resize(*this, size);
     }
@@ -2006,6 +2015,20 @@ int_vector<t_width>::serialize(std::ostream & out, structure_tree_node * v, std:
 template <uint8_t t_width>
 void int_vector<t_width>::load(std::istream & in)
 {
+    if (auto * mapped = dynamic_cast<mmap_ifstream *>(&in))
+    {
+        auto const offset = in.tellg();
+        if (offset < 0)
+            throw std::ios_base::failure("int_vector: invalid stream position");
+        auto const bytes = load(mapped->get_mmap_context(), static_cast<size_t>(offset));
+        in.seekg(bytes, std::ios_base::cur);
+        return;
+    }
+    if (m_mmap_context)
+    {
+        memory_manager::clear(*this);
+        m_size = 0;
+    }
     size_type size;
     int_vector<t_width>::read_header(size, m_width, in);
 
