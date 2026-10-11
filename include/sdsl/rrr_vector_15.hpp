@@ -118,6 +118,8 @@ public:
     }
 };
 
+inline binomial15::impl binomial15::iii;
+
 //! A specialization of the rrr_vector class for a block_size of 15.
 /*!
  *   \tparam t_rac  Random access integer vector. Use to store the block types.

@@ -724,7 +724,8 @@ public:
     //!\brief Serialise (load) via cereal if archive is not binary
     template <typename archive_t>
     inline typename std::enable_if<
-        !cereal::traits::is_input_serializable<cereal::BinaryData<int_vector<t_width>>, archive_t>::value,
+        !cereal::traits::is_input_serializable<cereal::BinaryData<int_vector<t_width>>, archive_t>::value
+            && !std::is_base_of_v<std::istream, archive_t>,
         void>::type
     CEREAL_LOAD_FUNCTION_NAME(archive_t & ar);
 
@@ -2088,7 +2089,8 @@ int_vector<t_width>::CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
 template <uint8_t t_width>
 template <typename archive_t>
 inline typename std::enable_if<
-    !cereal::traits::is_input_serializable<cereal::BinaryData<int_vector<t_width>>, archive_t>::value,
+    !cereal::traits::is_input_serializable<cereal::BinaryData<int_vector<t_width>>, archive_t>::value
+        && !std::is_base_of_v<std::istream, archive_t>,
     void>::type
 int_vector<t_width>::CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
 {
