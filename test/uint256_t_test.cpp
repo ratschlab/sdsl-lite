@@ -33,6 +33,7 @@ TEST(uint256_t_test, shifts)
 
 TEST(uint256_t_test, lab_integer_operations)
 {
+    static_assert(!std::is_trivially_copyable_v<sdsl::uint128_t> || std::is_trivially_copyable_v<sdsl::uint256_t>);
     auto const low = (sdsl::uint128_t{1} << 100) | 7;
     auto const high = sdsl::uint128_t{1} << 73;
     sdsl::uint256_t const value(low, high);

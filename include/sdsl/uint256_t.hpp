@@ -44,27 +44,10 @@ public:
     uint256_t(uint64_t lo, uint64_t mid, uint128_t high) : m_lo(lo), m_mid(mid), m_high(high)
     {}
 
-    inline uint256_t(uint256_t const & x) : m_lo(x.m_lo), m_mid(x.m_mid), m_high(x.m_high)
-    {}
-
-    inline uint256_t(uint256_t && x) : m_lo(std::move(x.m_lo)), m_mid(std::move(x.m_mid)), m_high(std::move(x.m_high))
-    {}
-
-    uint256_t & operator=(uint256_t const & x)
-    {
-        m_lo = x.m_lo;
-        m_mid = x.m_mid;
-        m_high = x.m_high;
-        return *this;
-    }
-
-    uint256_t & operator=(uint256_t && x)
-    {
-        m_lo = std::move(x.m_lo);
-        m_mid = std::move(x.m_mid);
-        m_high = std::move(x.m_high);
-        return *this;
-    }
+    uint256_t(uint256_t const &) = default;
+    uint256_t(uint256_t &&) = default;
+    uint256_t & operator=(uint256_t const &) = default;
+    uint256_t & operator=(uint256_t &&) = default;
 
     inline uint16_t popcount() const
     {
