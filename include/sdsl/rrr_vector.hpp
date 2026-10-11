@@ -449,6 +449,16 @@ public:
     {
         return iterator(this, size());
     }
+
+    bool operator==(rrr_vector const & other) const
+    {
+        return m_size == other.m_size && m_bt == other.m_bt && m_btnr == other.m_btnr && m_btnrp == other.m_btnrp
+            && m_rank == other.m_rank;
+    }
+    bool operator!=(rrr_vector const & other) const
+    {
+        return !(*this == other);
+    }
 };
 
 template <uint8_t t_bit_pattern>
@@ -598,6 +608,15 @@ public:
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         structure_tree::add_size(child, 0);
         return 0;
+    }
+
+    bool operator==(rank_support_rrr const & other) const
+    {
+        return m_v == other.m_v || (m_v && other.m_v && *m_v == *other.m_v);
+    }
+    bool operator!=(rank_support_rrr const & other) const
+    {
+        return !(*this == other);
     }
 };
 
@@ -791,6 +810,15 @@ public:
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         structure_tree::add_size(child, 0);
         return 0;
+    }
+
+    bool operator==(select_support_rrr const & other) const
+    {
+        return m_v == other.m_v || (m_v && other.m_v && *m_v == *other.m_v);
+    }
+    bool operator!=(select_support_rrr const & other) const
+    {
+        return !(*this == other);
     }
 };
 

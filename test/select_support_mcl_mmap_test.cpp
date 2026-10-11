@@ -102,6 +102,8 @@ TYPED_TEST(select_support_mcl_mmap_test, mmap_load_and_select)
         ss_mmap.load(in, &bv_mmap);
     }
 
+    EXPECT_EQ(ss_orig, ss_mmap);
+
     // Verify all select() results
     for (uint64_t i = 0; i < answers.size(); ++i)
     {

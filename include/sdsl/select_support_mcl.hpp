@@ -117,6 +117,24 @@ public:
     select_support_mcl<t_b, t_pat_len> & operator=(select_support_mcl const & ss);
     select_support_mcl<t_b, t_pat_len> & operator=(select_support_mcl &&);
     void swap(select_support_mcl<t_b, t_pat_len> & ss);
+    bool operator==(select_support_mcl const & other) const
+    {
+        if (m_arg_cnt != other.m_arg_cnt || m_superblock != other.m_superblock || m_miniblock != other.m_miniblock)
+            return false;
+        for (size_type sb = 0; sb < m_superblock.size(); ++sb)
+        {
+            if (miniblock_size(sb) != other.miniblock_size(sb))
+                return false;
+            for (size_type i = 0; i < miniblock_size(sb); ++i)
+                if (miniblock_value(sb, i) != other.miniblock_value(sb, i))
+                    return false;
+        }
+        return true;
+    }
+    bool operator!=(select_support_mcl const & other) const
+    {
+        return !(*this == other);
+    }
 };
 
 template <uint8_t t_b, uint8_t t_pat_len>
