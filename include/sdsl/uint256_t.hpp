@@ -66,13 +66,13 @@ public:
         return *this;
     }
 
-    inline uint16_t popcount()
+    inline uint16_t popcount() const
     {
         return ((uint16_t)bits::cnt(m_lo)) + (uint16_t)bits::cnt(m_mid) + (uint16_t)bits::cnt(m_high >> 64)
              + (uint16_t)bits::cnt(m_high);
     }
 
-    inline uint16_t hi()
+    inline uint16_t hi() const
     {
         if (m_high == (uint128_t)0ULL)
         {
@@ -99,7 +99,7 @@ public:
         }
     }
 
-    inline uint16_t select(uint32_t i)
+    inline uint16_t select(uint32_t i) const
     {
         uint16_t x = 0;
         if ((x = (uint16_t)bits::cnt(m_lo)) >= i)
