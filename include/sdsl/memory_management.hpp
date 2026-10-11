@@ -1087,6 +1087,7 @@ public:
     }
 };
 
+// Mapped-file helpers retained from the lab v2 fork (GPL-3.0-or-later; see COPYING.v2).
 class mmap_context
 {
 public:

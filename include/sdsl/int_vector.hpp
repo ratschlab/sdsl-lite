@@ -680,6 +680,7 @@ public:
     void load(std::istream & in);
 
     //! Load a view of a legacy-format vector while retaining its mapped file.
+    // Lab v2 mmap compatibility (GPL-3.0-or-later; see COPYING.v2).
     size_t load(std::shared_ptr<mmap_context> const & context, size_t offset)
     {
         size_t const header = sizeof(uint64_t) + (t_width == 0);
