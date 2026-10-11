@@ -246,15 +246,19 @@ public:
     friend class coder::comma;
     friend class memory_manager;
     static constexpr uint8_t fixed_int_width = t_width;
-    float growth_factor = 1.5; //!< Growth factor for amortized constant time operations
-                               // see the explanation in the documentation of FBVector on different growth factors
-                               // https://github.com/facebook/folly/blob/master/folly/docs/FBVector.md#memory-handling
 
 private:
     size_type m_size;       //!< Number of bits needed to store int_vector.
     size_type m_capacity;   //!< Number of bits reserved by int_vector.
     uint64_t * m_data;      //!< Pointer to the memory for the bits.
     int_width_type m_width; //!< Width of the integers.
+
+public:
+    float growth_factor = 1.5; //!< Growth factor for amortized constant time operations
+                               // see the explanation in the documentation of FBVector on different growth factors
+                               // https://github.com/facebook/folly/blob/master/folly/docs/FBVector.md#memory-handling
+
+private:
     std::shared_ptr<mmap_context> m_mmap_context;
 
     // Hidden, since number of bits (size) does not go well together with int value.
@@ -924,23 +928,6 @@ public:
         return bytes;
     }
 
-    struct raw_wrapper
-    {
-        int_vector const & vec;
-        raw_wrapper() = delete;
-        raw_wrapper(int_vector const & _vec) : vec(_vec)
-        {}
-
-        size_type serialize(std::ostream & out, structure_tree_node * v = nullptr, std::string name = "") const
-        {
-            structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
-            auto written_bytes = vec.write_data(out);
-            structure_tree::add_size(child, written_bytes);
-            return written_bytes;
-        }
-    };
-
-    raw_wrapper const raw = raw_wrapper(*this);
 };
 
 //! A proxy class that acts as a reference to an integer of length \p len bits in a int_vector.
