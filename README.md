@@ -7,13 +7,13 @@
 
 ## MetaGraph lab integration
 
-This branch follows upstream v3 and includes the changes submitted in xxsds/sdsl-lite PRs #145–154.
+This branch follows upstream v3 and includes the changes submitted in xxsds/sdsl-lite PRs #145–158.
 It retains the lab fork's integer-vector, RRR, mapped-select, and count-vector formats so existing
 MetaGraph indexes remain readable. These stream formats differ from unmodified upstream v3.
 The lab's mapped-file APIs and embedded-vector offsets are also retained.
 
 SDSL is now header-only and requires C++17 or later. V3 adds per-vector capacity and growth bookkeeping;
-on x86-64, `int_vector` objects grow from 40 to 64 bytes. Serialized payload sizes do not grow with it.
+on x86-64, `int_vector` objects grow from 40 to 48 bytes. Serialized payload sizes do not grow with it.
 Retained v2 implementations keep their original GPL notices; [COPYING.v2](COPYING.v2) contains that license.
 Upstream v3's license remains in [LICENSE](LICENSE).
 

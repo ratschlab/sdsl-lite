@@ -26,6 +26,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <stdio.h>
 #include <string>
@@ -46,6 +47,7 @@ public:
     class iterator;
     typedef typename int_vector<t_width>::difference_type difference_type;
     typedef typename int_vector<t_width>::value_type value_type;
+    typedef typename int_vector<t_width>::size_type size_type;
 
 private:
     static_assert(t_width <= 64, "int_vector_buffer: width must be at most 64 bits.");
@@ -476,6 +478,8 @@ public:
         {}
 
     public:
+        reference(reference const &) = default;
+
         //! Conversion to int for read operations
         operator uint64_t() const
         {
@@ -557,18 +561,18 @@ public:
     class iterator
     {
     private:
-        int_vector_buffer<t_width> & m_ivb;
+        int_vector_buffer<t_width> * m_ivb{nullptr};
         uint64_t m_idx = 0;
 
     public:
         using iterator_category = std::random_access_iterator_tag;
-        using value_type = int_vector_buffer<t_width>::value_type;
-        using difference_type = int_vector_buffer<t_width>::difference_type;
+        using value_type = sdsl::int_vector_buffer<t_width>::value_type;
+        using difference_type = sdsl::int_vector_buffer<t_width>::difference_type;
         using pointer = value_type *;
-        using reference = int_vector_buffer<t_width>::reference;
+        using reference = sdsl::int_vector_buffer<t_width>::reference;
 
         iterator() = delete;
-        iterator(int_vector_buffer<t_width> & ivb, uint64_t idx = 0) : m_ivb(ivb), m_idx(idx)
+        iterator(int_vector_buffer<t_width> & ivb, uint64_t idx = 0) : m_ivb(&ivb), m_idx(idx)
         {}
 
         iterator & operator++()
@@ -599,7 +603,8 @@ public:
 
         reference operator*() const
         {
-            return m_ivb[m_idx];
+            assert(m_ivb != nullptr);
+            return (*m_ivb)[m_idx];
         }
 
         iterator & operator+=(difference_type i)
@@ -632,15 +637,60 @@ public:
 
         bool operator==(iterator const & it) const
         {
-            return &m_ivb == &(it.m_ivb) and m_idx == it.m_idx;
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
+            return m_idx == it.m_idx;
         }
 
         bool operator!=(iterator const & it) const
         {
             return !(*this == it);
         }
-        inline difference_type operator-(iterator const & it)
+
+        bool operator<(iterator const & it) const
         {
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
+            return m_idx < it.m_idx;
+        }
+
+        bool operator>(iterator const & it) const
+        {
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
+            return m_idx > it.m_idx;
+        }
+
+        bool operator<=(iterator const & it) const
+        {
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
+            return m_idx <= it.m_idx;
+        }
+
+        bool operator>=(iterator const & it) const
+        {
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
+            return m_idx >= it.m_idx;
+        }
+
+        difference_type operator-(iterator const & it) const
+        {
+            // assert that iterator point to the same int_vector_buffer
+            assert(m_ivb);
+            assert(it.m_ivb);
+            assert(m_ivb == it.m_ivb);
             return (m_idx - it.m_idx);
         }
     };

@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 #include <sdsl/int_vector.hpp>
+#include <sdsl/int_vector_buffer.hpp>
 #include <sdsl/int_vector_mapper.hpp>
 #include <sdsl/sd_vector.hpp>
 
@@ -90,6 +92,30 @@ TEST_F(lab_storage_test, mapper_at_file_offset)
     ASSERT_EQ(20u, got.size());
     EXPECT_EQ(3u, got[0]);
     EXPECT_EQ(91u, got[19]);
+}
+
+TEST_F(lab_storage_test, buffer_iterator_preserves_v3_operations)
+{
+    using buffer_type = sdsl::int_vector_buffer<>;
+    buffer_type buffer(file, std::ios::out, 8, 13);
+    for (uint64_t i = 0; i < 100; ++i)
+        buffer.push_back(i * 2);
+
+    buffer_type::size_type const size = buffer.size();
+    auto const first = buffer.begin();
+    auto const last = buffer.end();
+    auto it = first;
+    it = last;
+    EXPECT_EQ(size, last - first);
+    EXPECT_EQ(-static_cast<buffer_type::difference_type>(size), first - last);
+    EXPECT_EQ(last, it);
+    EXPECT_LT(first, last);
+    EXPECT_LE(first, first);
+    EXPECT_GT(last, first);
+    EXPECT_GE(last, last);
+    auto const found = std::lower_bound(first, last, 91);
+    EXPECT_EQ(92u, static_cast<uint64_t>(*found));
+    EXPECT_EQ(46, found - first);
 }
 
 TEST_F(lab_storage_test, sparse_vector_stream_load)
