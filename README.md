@@ -7,7 +7,7 @@
 
 ## MetaGraph lab integration
 
-This branch follows upstream v3 and includes the changes submitted in xxsds/sdsl-lite PRs #145–160.
+This branch follows upstream v3 and includes the changes submitted in xxsds/sdsl-lite PRs #145–158 and #160.
 It retains the lab fork's integer-vector, RRR, mapped-select, and count-vector formats so existing
 MetaGraph indexes remain readable. These stream formats differ from unmodified upstream v3.
 The lab's mapped-file APIs and embedded-vector offsets are also retained.

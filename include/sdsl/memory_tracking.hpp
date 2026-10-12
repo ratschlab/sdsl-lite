@@ -259,10 +259,8 @@ private:
 
     static memory_monitor & the_monitor()
     {
-        // Static containers may use the monitor after other static destructors run.
-        // Retain its state, including RAM files, until the process exits.
-        static memory_monitor * const m = new memory_monitor;
-        return *m;
+        static memory_monitor m;
+        return m;
     }
 
 public:
