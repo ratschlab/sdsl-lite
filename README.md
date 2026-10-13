@@ -7,12 +7,13 @@
 
 ## MetaGraph lab integration
 
-This branch follows upstream v3 and includes the changes submitted in xxsds/sdsl-lite PRs #145–158 and #160.
+This branch follows upstream v3, including merged PRs #159 (service lifetimes) and #161 (C++20),
+and includes the lab changes submitted in PRs #145–158 and #160.
 It retains the lab fork's integer-vector, RRR, mapped-select, and count-vector formats so existing
 MetaGraph indexes remain readable. These stream formats differ from unmodified upstream v3.
 The lab's mapped-file APIs and embedded-vector offsets are also retained.
 
-SDSL is now header-only and requires C++17 or later. V3 adds per-vector capacity and growth bookkeeping;
+SDSL is now header-only and requires C++20 or later. V3 adds per-vector capacity and growth bookkeeping;
 on x86-64, `int_vector` objects grow from 40 to 48 bytes. Serialized payload sizes do not grow with it.
 Retained v2 implementations keep their original GPL notices; [COPYING.v2](COPYING.v2) contains that license.
 Upstream v3's license remains in [LICENSE](LICENSE).
@@ -21,7 +22,7 @@ Upstream v3's license remains in [LICENSE](LICENSE).
 
 * header-only library
 * support for serialisation via [cereal](https://github.com/USCiLab/cereal)
-* compatible with C++17, C++20, and C++23
+* requires C++20 or newer
 
 ## Supported compilers
 
@@ -31,7 +32,7 @@ each listed major compiler version is supported.
 * GCC 14, 15, 16
 * clang 20, 21, 22
 
-Tests are run with C++23.
+Linux and header tests use C++20; macOS and sanitizer tests also cover C++23.
 
 ## Dependencies
 
