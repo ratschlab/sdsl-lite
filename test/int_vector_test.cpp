@@ -183,6 +183,14 @@ TEST_F(int_vector_test, constructors)
     }
 }
 
+template <typename Vector>
+concept has_width_setter = requires(Vector & v) { v.width(uint8_t{8}); };
+
+static_assert(has_width_setter<sdsl::int_vector<>>);
+static_assert([]<size_t... Width>(std::index_sequence<Width...>) {
+    return (!has_width_setter<sdsl::int_vector<Width + 1>> && ...);
+}(std::make_index_sequence<64>{}));
+
 TEST_F(int_vector_test, width)
 {
     {
