@@ -1190,8 +1190,21 @@ public:
     typedef uint64_t size_type;
 
 protected:
-    uint32_t m_offset;
+    // A 16-byte int_vector<0> iterator is returned as { i64, ptr }, and Clang then keeps offset and width packed in
+    // one register in inlined loops. The 64-bit offset makes it 24 bytes, which avoids that.
+    std::conditional_t<t_int_vector::fixed_int_width == 0, uint64_t, uint32_t> m_offset;
     uint8_t m_len;
+
+    uint8_t len() const noexcept
+    {
+#if defined(__clang__)
+        // Lets Clang drop the stored width of fixed-width iterators; GCC's inlined mutable scans were slower with it.
+        if constexpr (t_int_vector::fixed_int_width != 0)
+            return t_int_vector::fixed_int_width;
+        else
+#endif
+            return m_len;
+    }
 
 public:
     int_vector_iterator_base(uint8_t offset, uint8_t len) : m_offset(offset), m_len(len)
@@ -1213,6 +1226,7 @@ class int_vector_iterator_ops : public int_vector_iterator_base<std::remove_cons
     using base_type = int_vector_iterator_base<std::remove_const_t<Vector>>;
 
 protected:
+    using base_type::len;
     using base_type::m_len;
     using base_type::m_offset;
     using word_type =
@@ -1243,7 +1257,7 @@ public:
         }
         else
         {
-            auto next = self.m_offset + self.m_len;
+            auto next = self.m_offset + self.len();
             self.m_word += next / 64;
             self.m_offset = next % 64;
         }
@@ -1272,7 +1286,7 @@ public:
         }
         else
         {
-            auto previous = self.m_offset - self.m_len;
+            auto previous = self.m_offset - self.len();
             self.m_word -= previous > self.m_offset;
             self.m_offset = previous % 64;
         }
@@ -1292,7 +1306,7 @@ public:
         auto & self = static_cast<Derived &>(*this);
         if (i < 0)
             return *this -= (-i);
-        difference_type t = i * self.m_len;
+        difference_type t = i * self.len();
         self.m_word += t / 64;
         if ((self.m_offset += t % 64) >= 64)
         {
@@ -1307,7 +1321,7 @@ public:
         auto & self = static_cast<Derived &>(*this);
         if (i < 0)
             return *this += (-i);
-        difference_type t = i * self.m_len;
+        difference_type t = i * self.len();
         self.m_word -= t / 64;
         if ((self.m_offset -= t % 64) >= 64)
         {
@@ -1335,7 +1349,7 @@ public:
     {
         auto const & self = static_cast<Derived const &>(*this);
         Derived it = self;
-        difference_type bit = difference_type(self.m_offset) + i * self.m_len;
+        difference_type bit = difference_type(self.m_offset) + i * self.len();
         // Signed shift rounds down, including when indexing before this iterator.
         it.m_word += bit >> 6;
         it.m_offset = bit & 63;
@@ -1390,6 +1404,7 @@ class int_vector_iterator : public detail::int_vector_iterator_ops<t_int_vector,
     using base_type = detail::int_vector_iterator_ops<t_int_vector, int_vector_iterator>;
     friend base_type;
 
+    using base_type::len;
     using base_type::m_len;
     using base_type::m_offset;
     using base_type::m_word;
@@ -1431,13 +1446,13 @@ public:
 
     reference operator*() const
     {
-        return reference(m_word, uint8_t(m_offset), m_len);
+        return reference(m_word, uint8_t(m_offset), len());
     }
 
     using base_type::operator-;
     difference_type operator-(int_vector_iterator const & it) const noexcept
     {
-        return (((m_word - it.m_word) << 6) + difference_type(m_offset) - difference_type(it.m_offset)) / m_len;
+        return (((m_word - it.m_word) << 6) + difference_type(m_offset) - difference_type(it.m_offset)) / len();
     }
 };
 
@@ -1455,6 +1470,7 @@ class int_vector_const_iterator :
     using base_type = detail::int_vector_iterator_ops<t_int_vector const, int_vector_const_iterator>;
     friend base_type;
 
+    using base_type::len;
     using base_type::m_len;
     using base_type::m_offset;
     using base_type::m_word;
@@ -1487,7 +1503,7 @@ public:
         if constexpr (t_int_vector::fixed_int_width == 1)
             return (*m_word >> uint64_t(m_offset)) & 1;
         else
-            return detail::read_packed_integer(m_word, m_offset, m_len);
+            return detail::read_packed_integer(m_word, m_offset, len());
     }
 
 private:
@@ -1498,7 +1514,7 @@ private:
         if constexpr (t_int_vector::fixed_int_width == 1)
             return (*m_word >> uint64_t(m_offset)) & 1;
         else
-            return detail::read_packed_integer_indexed(m_word, m_offset, m_len);
+            return detail::read_packed_integer_indexed(m_word, m_offset, len());
     }
 };
 
@@ -1507,7 +1523,7 @@ inline typename int_vector_const_iterator<t_int_vector>::difference_type
 operator-(int_vector_const_iterator<t_int_vector> const & x, int_vector_const_iterator<t_int_vector> const & y)
 {
     using difference_type = typename int_vector_const_iterator<t_int_vector>::difference_type;
-    return (((x.m_word - y.m_word) << 6) + difference_type(x.m_offset) - difference_type(y.m_offset)) / x.m_len;
+    return (((x.m_word - y.m_word) << 6) + difference_type(x.m_offset) - difference_type(y.m_offset)) / x.len();
 }
 
 template <class t_int_vector>
