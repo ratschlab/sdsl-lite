@@ -88,13 +88,15 @@ void _set_one_bits(t_int_vec & v);
 //! Bit compress the int_vector
 /*! Determine the biggest value X and then set the
  *  int_width to the smallest possible so that we
- *  still can represent X
+ *  still can represent X. Only available for variable-width vectors.
  */
 template <class t_int_vec>
+    requires (t_int_vec::fixed_int_width == 0)
 void bit_compress(t_int_vec & v);
 
-//! Expands the integer width to new_width >= v.width()
+//! Expands a variable-width vector to new_width >= v.width(), preserving its values.
 template <class t_int_vec>
+    requires (t_int_vec::fixed_int_width == 0)
 void expand_width(t_int_vec & v, uint8_t new_width);
 
 //! All elements of v modulo m
@@ -504,6 +506,7 @@ void util::mod(t_int_vec & v, typename t_int_vec::size_type m)
 }
 
 template <class t_int_vec>
+    requires (t_int_vec::fixed_int_width == 0)
 void util::bit_compress(t_int_vec & v)
 {
     auto max_elem = std::max_element(v.begin(), v.end());
@@ -532,6 +535,7 @@ void util::bit_compress(t_int_vec & v)
 }
 
 template <class t_int_vec>
+    requires (t_int_vec::fixed_int_width == 0)
 void util::expand_width(t_int_vec & v, uint8_t new_width)
 {
     uint8_t old_width = v.width();

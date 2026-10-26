@@ -534,7 +534,10 @@ public:
         uint8_t width = std::max(bits::hi(max_symbol) + 2, bits::hi(n + 1) + 2);
         DBG_OUT << "sorter: width=" << (int)width << " max_symbol_width=" << bits::hi(max_symbol) + 1
                 << " n_width=" << bits::hi(n) << std::endl;
-        util::expand_width(x, width);
+        if constexpr (tIV::fixed_int_width == 0)
+            util::expand_width(x, width);
+        else if (width > x.width())
+            throw std::logic_error("Fixed-width suffix array is too small for the text");
         sa = x;
         if (sa.width() < x.width())
         {
@@ -566,7 +569,8 @@ public:
         else
         {
             load_vector_from_file(x, file_name, num_bytes);
-            util::bit_compress(x);
+            if constexpr (tIV::fixed_int_width == 0)
+                util::bit_compress(x);
         }
         do_sort(sa, x);
     }
