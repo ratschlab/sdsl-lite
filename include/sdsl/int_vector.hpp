@@ -80,6 +80,22 @@ struct int_vec_category_trait<1>
     typedef bv_tag type;
 };
 
+namespace detail
+{
+// Preserve begin's zero offset while GCC performs early constructor inlining.
+template <typename Vector, typename Index = std::integral_constant<int_vector_size_type, 0>>
+auto iterator_at(Vector * v, Index index = {}) noexcept
+{
+    using iterator = std::conditional_t<std::is_const_v<Vector>,
+                                        typename Vector::const_iterator,
+                                        typename Vector::iterator>;
+    if constexpr (std::is_pointer_v<iterator>)
+        return reinterpret_cast<iterator>(v->data()) + index;
+    else
+        return iterator(v, index * v->width());
+}
+} // namespace detail
+
 template <uint8_t t_width>
 struct int_vector_trait
 {
@@ -91,31 +107,13 @@ struct int_vector_trait
     typedef int_vector_iterator<int_vector_type> iterator;
     typedef int_vector_const_iterator<int_vector_type> const_iterator;
 
-private:
-    // Keep begin's zero offset constant when GCC inlines the packed constructor.
-    template <typename Vector, typename Index = std::integral_constant<int_vector_size_type, 0>>
-    static auto iterator_at(Vector * v, Index index = {}) noexcept
+    static auto begin(auto * v) noexcept
     {
-        using result_type = std::conditional_t<std::is_const_v<Vector>, const_iterator, iterator>;
-        return result_type(v, index * v->width());
+        return detail::iterator_at(v);
     }
-
-public:
-    static iterator begin(int_vector_type * v) noexcept
+    static auto end(auto * v) noexcept
     {
-        return iterator_at(v);
-    }
-    static iterator end(int_vector_type * v) noexcept
-    {
-        return iterator_at(v, v->size());
-    }
-    static const_iterator begin(int_vector_type const * v) noexcept
-    {
-        return iterator_at(v);
-    }
-    static const_iterator end(int_vector_type const * v) noexcept
-    {
-        return iterator_at(v, v->size());
+        return detail::iterator_at(v, v->size());
     }
 
     static void set_width(uint8_t new_width, int_width_type & width) noexcept
@@ -141,30 +139,13 @@ struct int_vector_trait<t_width>
     using iterator = value_type *;
     using const_iterator = value_type const *;
 
-private:
-    template <typename Vector>
-    static auto iterator_at(Vector * v, int_vector_size_type index = 0) noexcept
+    static auto begin(auto * v) noexcept
     {
-        using result_type = std::conditional_t<std::is_const_v<Vector>, const_iterator, iterator>;
-        return reinterpret_cast<result_type>(v->data()) + index;
+        return detail::iterator_at(v);
     }
-
-public:
-    static iterator begin(int_vector_type * v) noexcept
+    static auto end(auto * v) noexcept
     {
-        return iterator_at(v);
-    }
-    static iterator end(int_vector_type * v) noexcept
-    {
-        return iterator_at(v, v->size());
-    }
-    static const_iterator begin(int_vector_type const * v) noexcept
-    {
-        return iterator_at(v);
-    }
-    static const_iterator end(int_vector_type const * v) noexcept
-    {
-        return iterator_at(v, v->size());
+        return detail::iterator_at(v, v->size());
     }
 
     static void set_width(uint8_t, int_width_type) noexcept
