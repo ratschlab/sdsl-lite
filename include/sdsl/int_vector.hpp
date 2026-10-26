@@ -80,76 +80,53 @@ struct int_vec_category_trait<1>
     typedef bv_tag type;
 };
 
-namespace detail
-{
-// Preserve begin's zero offset while GCC performs early constructor inlining.
-template <typename Vector, typename Index = std::integral_constant<int_vector_size_type, 0>>
-auto iterator_at(Vector * v, Index index = {}) noexcept
-{
-    using iterator = std::conditional_t<std::is_const_v<Vector>,
-                                        typename Vector::const_iterator,
-                                        typename Vector::iterator>;
-    if constexpr (std::is_pointer_v<iterator>)
-        return reinterpret_cast<iterator>(v->data()) + index;
-    else
-        return iterator(v, index * v->width());
-}
-} // namespace detail
-
 template <uint8_t t_width>
 struct int_vector_trait
 {
-    typedef uint64_t value_type;
-    typedef int_vector<t_width> int_vector_type;
-    typedef int_vector_reference<int_vector_type> reference;
-    typedef uint64_t const_reference;
-    typedef uint8_t int_width_type;
-    typedef int_vector_iterator<int_vector_type> iterator;
-    typedef int_vector_const_iterator<int_vector_type> const_iterator;
+private:
+    static constexpr bool native_width = t_width >= 8 && 64 % t_width == 0;
 
-    static auto begin(auto * v) noexcept
-    {
-        return detail::iterator_at(v);
-    }
-    static auto end(auto * v) noexcept
-    {
-        return detail::iterator_at(v, v->size());
-    }
-
-    static void set_width(uint8_t new_width, int_width_type & width) noexcept
-    {
-        if constexpr (t_width == 0)
-            width = new_width ? std::min(new_width, uint8_t{64u}) : 64u;
-    }
-};
-
-template <uint8_t t_width>
-    requires (t_width >= 8 && 64 % t_width == 0)
-struct int_vector_trait<t_width>
-{
+public:
     using value_type =
         std::conditional_t<t_width == 8,  uint8_t,
         std::conditional_t<t_width == 16, uint16_t,
         std::conditional_t<t_width == 32, uint32_t,
                                          uint64_t>>>;
     using int_vector_type = int_vector<t_width>;
-    using reference = value_type &;
-    using const_reference = value_type const &;
+    using reference = std::conditional_t<native_width, value_type &, int_vector_reference<int_vector_type>>;
+    using const_reference = std::conditional_t<native_width, value_type const &, value_type>;
     using int_width_type = uint8_t;
-    using iterator = value_type *;
-    using const_iterator = value_type const *;
+    using iterator = std::conditional_t<native_width, value_type *, int_vector_iterator<int_vector_type>>;
+    using const_iterator =
+        std::conditional_t<native_width, value_type const *, int_vector_const_iterator<int_vector_type>>;
 
+private:
+    template <typename Vector>
+    static auto iterator_at(Vector * v, int_vector_size_type index = 0) noexcept
+    {
+        using result_type = std::conditional_t<std::is_const_v<Vector>, const_iterator, iterator>;
+        if constexpr (native_width)
+            return reinterpret_cast<result_type>(v->data()) + index;
+        else
+            return result_type(v, index * v->width());
+    }
+
+public:
     static auto begin(auto * v) noexcept
     {
-        return detail::iterator_at(v);
+        return iterator_at(v);
     }
     static auto end(auto * v) noexcept
     {
-        return detail::iterator_at(v, v->size());
+        return iterator_at(v, v->size());
     }
 
-    static void set_width(uint8_t, int_width_type) noexcept
-    {}
+    static void set_width(uint8_t new_width,
+                          std::conditional_t<native_width, int_width_type, int_width_type &> width) noexcept
+    {
+        if constexpr (t_width == 0)
+            width = new_width ? std::min(new_width, uint8_t{64u}) : 64u;
+    }
 };
 
 //! A generic vector class for integers of width \f$w\in [1..64]\f$.
