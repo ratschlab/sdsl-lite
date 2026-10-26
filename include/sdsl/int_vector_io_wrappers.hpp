@@ -50,7 +50,7 @@ public:
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         size_type written_bytes = 0;
         // (1) write size and int_width
-        written_bytes += _sdsl_serialize_size_and_int_width(out, fixedIntWidth, m_vec.width(), m_vec.bit_size());
+        written_bytes += int_vector_type::write_header(m_vec.bit_size(), m_vec.width(), out);
         // (2) write entries in vbyte coding
         for (size_type i = 0; i < m_vec.size(); ++i)
         {
@@ -93,10 +93,9 @@ public:
         size_type size;
         typename int_vector_type::int_width_type int_width;
         // (1) read size and int_width
-        int_vector_trait<fixedIntWidth>::read_header(size, int_width, in);
+        int_vector<0>::read_header(size, int_width, in);
         // (2) resize the vector
-        if constexpr (fixedIntWidth == 0)
-            m_vec.width(int_width);
+        detail::copy_width(m_vec, int_width);
         m_vec.bit_resize(size);
         // (3) read vbyte encoded entries an put them into the vector
         size_type i = 0;

@@ -12,6 +12,7 @@
 
 #include <sdsl/bits.hpp>
 #include <sdsl/config.hpp>
+#include <sdsl/util.hpp>
 
 namespace sdsl
 {
@@ -183,6 +184,7 @@ template <typename T>
 template <class int_vector1, class int_vector2>
 inline bool fibonacci<T>::encode(int_vector1 const & v, int_vector2 & z)
 {
+    detail::copy_width(z, v.width());
     uint64_t z_bit_size = 0;
     uint64_t w;
     uint64_t const zero_val = v.width() < 64 ? (1ULL) << v.width() : 0;
@@ -284,8 +286,6 @@ inline bool fibonacci<T>::encode(int_vector1 const & v, int_vector2 & z)
             bits::write_int_and_move(z_data, fibword_low, offset, (len_1 & 0x3F) + 1);
         }
     }
-    if constexpr (int_vector2::fixed_int_width == 0)
-        z.width(v.width());
     return true;
 }
 
@@ -368,13 +368,12 @@ template <typename T>
 template <class int_vector1, class int_vector2>
 inline bool fibonacci<T>::decode(int_vector1 const & z, int_vector2 & v)
 {
+    detail::copy_width(v, z.width());
     uint64_t n = 0, carry = 0; // n = number of values to be decoded
     uint64_t const * data = z.data();
     // Determine size of v
     if (z.empty())
     { // if z is empty we are ready with decoding
-        if constexpr (int_vector2::fixed_int_width == 0)
-            v.width(z.width());
         v.resize(0);
         v.shrink_to_fit();
         return true;
@@ -391,8 +390,6 @@ inline bool fibonacci<T>::decode(int_vector1 const & z, int_vector2 & v)
     {
         n += bits::cnt11(*data, carry);
     }
-    if constexpr (int_vector2::fixed_int_width == 0)
-        v.width(z.width());
     v.resize(n);
     v.shrink_to_fit();
     return decode<false, true>(z.data(), 0, n, v.begin());

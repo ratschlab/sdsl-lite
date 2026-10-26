@@ -193,6 +193,7 @@ template <typename T>
 bool load_from_file(T & v, std::string const & file);
 
 //! Load an int_vector from a plain array of `num_bytes`-byte integers with X in \{0, 1,2,4,8\} from disk.
+// Values must fit the selected element width; insufficient fixed widths or max_int_width limits throw.
 // TODO: Remove ENDIAN dependency.
 template <typename t_int_vec>
 bool load_vector_from_file(t_int_vec & v, std::string const & file, uint8_t num_bytes = 1, uint8_t max_int_width = 64)
@@ -217,8 +218,7 @@ bool load_vector_from_file(t_int_vec & v, std::string const & file, uint8_t num_
                 tmp.push_back(x);
                 max_x = std::max(x, max_x);
             }
-            if constexpr (t_int_vec::fixed_int_width == 0)
-                v.width(bits::hi(max_x) + 1);
+            detail::prepare_width(v, bits::hi(max_x) + 1);
             v.resize(tmp.size());
             for (size_t i = 0; i < tmp.size(); ++i)
             {
@@ -244,8 +244,7 @@ bool load_vector_from_file(t_int_vec & v, std::string const & file, uint8_t num_
         isfstream in(file, std::ios::in | std::ios::binary);
         if (in)
         {
-            if constexpr (t_int_vec::fixed_int_width == 0)
-                v.width(std::min((int)8 * num_bytes, (int)max_int_width));
+            detail::prepare_width(v, std::min((int)8 * num_bytes, (int)max_int_width));
             v.resize(file_size / num_bytes);
             if (8 == t_int_vec::fixed_int_width and 1 == num_bytes)
             { // if int_vector<8> is created from byte alphabet file
@@ -269,6 +268,8 @@ bool load_vector_from_file(t_int_vec & v, std::string const & file, uint8_t num_
                         ++cur_byte;
                         if (cur_byte == num_bytes)
                         {
+                            if (x > bits::lo_set[v.width()])
+                                throw std::invalid_argument("load_vector_from_file: value exceeds element width");
                             v[idx++] = x;
                             cur_byte = 0;
                             x = 0ULL;

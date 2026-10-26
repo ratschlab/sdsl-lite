@@ -184,7 +184,7 @@ public:
             }
             if (!is_plain)
             {
-                m_data_offset = int_vector<t_width>::read_header(size_in_bits, int_width, f);
+                m_data_offset = int_vector<0>::read_header(size_in_bits, int_width, f);
             }
         }
 
@@ -211,6 +211,8 @@ public:
             size_in_bits = m_file_size_bytes * 8;
         }
 
+        detail::copy_width(m_wrapper, int_width);
+
         // open backend file depending on mode
         m_fd = memory_manager::open_file_for_mmap(m_file_name, t_mode);
         if (m_fd == -1)
@@ -220,9 +222,6 @@ public:
             throw std::runtime_error(open_error);
         }
 
-        // prepare for mmap
-        if constexpr (t_width == 0)
-            m_wrapper.width(int_width);
         // mmap data
         m_mapped_data = (uint8_t *)memory_manager::mmap_file(m_fd, m_file_size_bytes, t_mode);
         if (m_mapped_data == nullptr)

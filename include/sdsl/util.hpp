@@ -55,6 +55,34 @@
 namespace sdsl
 {
 
+namespace detail
+{
+// Choose the width before writing new values; existing values are not repacked.
+// A fixed-width destination may be wider, but must represent every output value.
+template <class Vector>
+void prepare_width(Vector & v, uint8_t required_width)
+{
+    if (required_width == 0 || required_width > 64)
+        throw std::invalid_argument("int_vector: invalid element width");
+    if constexpr (Vector::fixed_int_width == 0)
+        v.width(required_width);
+    else if (required_width > Vector::fixed_int_width)
+        throw std::invalid_argument("int_vector: insufficient element width");
+}
+
+// Encoded metadata describes the original element width, not a minimum width.
+template <class Vector>
+void copy_width(Vector & v, uint8_t source_width)
+{
+    if (source_width == 0 || source_width > 64)
+        throw std::invalid_argument("int_vector: invalid encoded element width");
+    if constexpr (Vector::fixed_int_width == 0)
+        v.width(source_width);
+    else if (source_width != Vector::fixed_int_width)
+        throw std::invalid_argument("int_vector: incompatible encoded element width");
+}
+} // namespace detail
+
 //! A namespace for helper functions
 namespace util
 {

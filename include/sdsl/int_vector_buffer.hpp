@@ -186,8 +186,7 @@ public:
             {
                 uint8_t width = 0;
                 int_vector<0>::read_header(size, width, m_ifile);
-                if constexpr (t_width == 0)
-                    m_buffer.width(width);
+                detail::copy_width(m_buffer, width);
             }
             assert(m_ifile.good());
             m_size = size / width();

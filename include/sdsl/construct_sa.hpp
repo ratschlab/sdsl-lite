@@ -94,8 +94,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
     constexpr uint8_t t_width = t_int_vec::fixed_int_width;
     if (len <= 1)
     { // handle special case
-        if constexpr (t_width == 0)
-            sa.width(1);
+        detail::prepare_width(sa, 1);
         sa.resize(len);
         if (len > 0)
             sa[0] = 0;
@@ -107,8 +106,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
         uint8_t sa_width = sa.width();
         if (32 == t_width or (0 == t_width and 32 >= sa_width))
         {
-            if constexpr (t_width == 0)
-                sa.width(32);
+            detail::prepare_width(sa, 32);
             sa.resize(len);
             divsufsort(c, (int32_t *)sa.data(), (int32_t)len);
             // copy integers back to the right positions
@@ -118,8 +116,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
                 {
                     sa.set_int(p, sa.get_int(i << 5, 32), sa_width);
                 }
-                if constexpr (t_width == 0)
-                    sa.width(sa_width);
+                detail::prepare_width(sa, sa_width);
                 sa.resize(len);
             }
         }
@@ -141,8 +138,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
     else
     {
         uint8_t sa_width = sa.width();
-        if constexpr (t_width == 0)
-            sa.width(64);
+        detail::prepare_width(sa, 64);
         sa.resize(len);
         divsufsort64(c, (int64_t *)sa.data(), len);
         // copy integers back to the right positions
@@ -152,8 +148,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
             {
                 sa.set_int(p, sa.get_int(i << 6, 64), sa_width);
             }
-            if constexpr (t_width == 0)
-                sa.width(sa_width);
+            detail::prepare_width(sa, sa_width);
             sa.resize(len);
         }
     }
