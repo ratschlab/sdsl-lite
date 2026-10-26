@@ -1073,7 +1073,9 @@ public:
 /*!
  * \tparam t_b            The bit pattern of size one. (so `0` or `1`)
  * \tparam k_sblock_rate  Superblock rate (number of blocks inside superblock)
- * Select searches superblock populations, then decodes the selected block.
+ * Select samples occurrence positions to narrow the superblock search, then decodes the selected block.
+ * Samples occupy about size()/128 bits per support and are rebuilt when attaching or loading.
+ * They are not serialized; size_in_bytes therefore excludes this derived memory.
  */
 template <uint8_t t_b, uint32_t k_sblock_rate>
 class select_support_hyb
@@ -1092,6 +1094,51 @@ public:
 
 private:
     bit_vector_type const * m_v;
+
+    // Chiu and Kempa, SEA 2026, Section 4: sample occurrences to bound the search.
+    // The directory is derived state, rebuilt on attachment rather than serialized.
+    static constexpr size_type sample_ratio = 128;
+    size_type m_sample_interval = 1;
+    int_vector<64> m_samples;
+
+    auto populations() const
+    {
+        auto population = [this](size_type sblock)
+        {
+            auto local = m_v->superblock_header(sblock).relative_ones;
+            auto hblock = sblock * k_sblock_rate / bit_vector_type::k_hblock_rate;
+            return rank_result<t_b>::adapt(m_v->hyperblock_header(hblock).ones_before + local,
+                                           sblock * bit_vector_type::k_sblock_size);
+        };
+        return random_access_container(population, (size() - 1) / bit_vector_type::k_sblock_size + 1);
+    }
+
+    void initialize_samples()
+    {
+        if (!m_v || !size())
+        {
+            m_sample_interval = 1;
+            m_samples = int_vector<64>();
+            return;
+        }
+        auto last = m_v->locate_block((size() - 1) / bit_vector_type::k_block_size);
+        size_type total = rank_result<t_b>::adapt(last.ones_before + last.descriptor.ones, size());
+        size_type budget = std::max<size_type>(size() / sample_ratio / 64, 2) - 1;
+        m_sample_interval = std::max<size_type>((total + budget - 1) / budget, 1);
+        size_type count = (total + m_sample_interval - 1) / m_sample_interval;
+        m_samples = int_vector<64>(count + 1);
+        auto prefixes = populations();
+        size_type sblock = 0;
+        for (size_type sample = 0; sample < count; ++sample)
+        {
+            size_type target = sample * m_sample_interval + 1;
+            while (sblock + 1 < prefixes.size() && prefixes[sblock + 1] < target)
+                ++sblock;
+            m_samples[sample] = sblock;
+        }
+        m_samples[count] = prefixes.size() - 1;
+    }
+
     using descriptor_type = typename bit_vector_type::template block_descriptor<uint32_t>;
 
     static uint32_t select_plain(std::span<uint8_t const, bit_vector_type::k_block_bytes> data, uint8_t select_index)
@@ -1168,21 +1215,14 @@ public:
         if (i > rank_result<t_b>::adapt(total_ones, size()))
             return size();
 
-        // Superblock headers contain prefix populations relative to their hyperblock.
-        // Read packed metadata with memcpy because the headers need not be aligned.
-        auto population = [&](size_type sblock)
-        {
-            auto local = m_v->superblock_header(sblock).relative_ones;
-            auto hblock = sblock * k_sblock_rate / bit_vector_type::k_hblock_rate;
-            return rank_result<t_b>::adapt(m_v->hyperblock_header(hblock).ones_before + local,
-                                           sblock * bit_vector_type::k_sblock_size);
-        };
-        auto prefixes = random_access_container(population, (size() - 1) / bit_vector_type::k_sblock_size + 1);
-        auto first = std::ranges::lower_bound(prefixes.begin() + 1, prefixes.end(), i);
+        auto prefixes = populations();
+        size_type sample = (i - 1) / m_sample_interval;
+        auto first = std::ranges::lower_bound(prefixes.begin() + m_samples[sample] + 1,
+                                              prefixes.begin() + m_samples[sample + 1] + 1, i);
         // Prefix zero is below i, so the target superblock precedes the lower bound.
         size_type begin = first - prefixes.begin() - 1;
 
-        i -= population(begin);
+        i -= prefixes[begin];
         size_type base = begin * bit_vector_type::k_sblock_size;
         auto [relative_offset, relative_ones, uniform, descriptors] = m_v->superblock_header(begin);
         if (uniform)
@@ -1221,16 +1261,7 @@ public:
     void set_vector(bit_vector_type const * v = nullptr)
     {
         m_v = v;
-    }
-
-    //! Assignment operator
-    select_support_hyb & operator=(select_support_hyb const & rs)
-    {
-        if (this != &rs)
-        {
-            set_vector(rs.m_v);
-        }
-        return *this;
+        initialize_samples();
     }
 
     //! Load the data structure from a stream and set the supported vector
@@ -1253,7 +1284,9 @@ public:
 
     template <typename archive_t>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
-    {}
+    {
+        initialize_samples();
+    }
 
     bool operator==(select_support_hyb const & other) const noexcept
     {
