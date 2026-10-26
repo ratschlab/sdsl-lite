@@ -71,13 +71,7 @@ class comma; // IWYU pragma: keep
 template <uint8_t t_width>
 struct int_vec_category_trait
 {
-    typedef iv_tag type;
-};
-
-template <>
-struct int_vec_category_trait<1>
-{
-    typedef bv_tag type;
+    using type = std::conditional_t<t_width == 1, bv_tag, iv_tag>;
 };
 
 template <uint8_t t_width>
