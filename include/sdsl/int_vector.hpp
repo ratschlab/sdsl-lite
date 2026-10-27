@@ -1140,6 +1140,16 @@ public:
         return detail::read_packed_integer(m_word, m_offset, m_len);
     }
 
+#if defined(__GNUC__) && !defined(__clang__)
+    // Let GCC scalarize runtime-width sort iterators instead of forcing the conversion inline.
+    template <class Value>
+        requires (std::is_same_v<Value, value_type> && detail::iterator_fixed_width<t_int_vector> == 0)
+    friend bool operator<(Value value, int_vector_reference field) noexcept
+    {
+        return value < detail::read_packed_integer(field.m_word, field.m_offset, field.m_len);
+    }
+#endif
+
     //! Prefix increment of the proxy object
     int_vector_reference & operator++() noexcept
     {
