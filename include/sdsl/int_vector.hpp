@@ -1057,6 +1057,18 @@ inline uint64_t read_packed_integer_indexed(uint64_t const * word, indexed_offse
     }
 }
 
+inline void write_packed_integer(uint64_t * word, uint64_t value, uint8_t offset, uint8_t width)
+{
+    auto mask = bits::lo_set[width];
+    value &= mask;
+    *word = (*word & ~(mask << offset)) | (value << offset);
+    if (offset + width > 64)
+    {
+        auto shift = 64 - offset;
+        word[1] = (word[1] & ~(mask >> shift)) | (value >> shift);
+    }
+}
+
 } // namespace detail
 
 template <class t_int_vector>
@@ -1097,19 +1109,8 @@ public:
      */
     int_vector_reference & operator=(value_type x) noexcept
     {
-#if defined(__clang__) && defined(__x86_64__)
         auto width = detail::iterator_fixed_width<t_int_vector> ? detail::iterator_fixed_width<t_int_vector> : m_len;
-        auto mask = bits::lo_set[width];
-        x &= mask;
-        *m_word = (*m_word & ~(mask << m_offset)) | (x << m_offset);
-        if (m_offset + width > 64)
-        {
-            auto shift = 64 - m_offset;
-            m_word[1] = (m_word[1] & ~(mask >> shift)) | (x >> shift);
-        }
-#else
-        bits::write_int(m_word, x, m_offset, m_len);
-#endif
+        detail::write_packed_integer(m_word, x, m_offset, width);
         return *this;
     };
 
@@ -1482,6 +1483,11 @@ public:
     bool operator==(Derived const & it) const noexcept
     {
         auto const & self = static_cast<Derived const &>(*this);
+#if defined(__GNUC__) && !defined(__clang__)
+        // Keep the invariant base check out of GCC's const scan loops.
+        if constexpr (std::is_const_v<Vector>)
+            return it.m_position == self.m_position && it.m_base == self.m_base;
+#endif
         return it.m_base == self.m_base && it.m_position == self.m_position;
     }
 

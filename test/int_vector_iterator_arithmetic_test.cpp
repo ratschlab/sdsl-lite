@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iterator>
 #include <random>
@@ -134,6 +135,32 @@ TEST(int_vector_iterator_arithmetic, unaligned_bit_origins)
         check_bit_origins<0>(width);
     check_bit_origins<61>(61);
     check_bit_origins<63>(63);
+}
+
+TEST(int_vector_iterator_arithmetic, writes_preserve_surrounding_bits)
+{
+    std::mt19937_64 random(419);
+    for (uint8_t width = 1; width <= 64; ++width)
+    {
+        for (uint8_t offset = 0; offset < 64; ++offset)
+        {
+            for (uint64_t value : {uint64_t{0}, ~uint64_t{0}, random()})
+            {
+                std::array<uint64_t, 4> words{random(), random(), random(), random()};
+                auto expected = words;
+                for (uint8_t bit = 0; bit < width; ++bit)
+                {
+                    size_t position = 64 + offset + bit;
+                    uint64_t mask = uint64_t{1} << (position % 64);
+                    expected[position / 64] =
+                        (expected[position / 64] & ~mask) | (((value >> bit) & 1) << (position % 64));
+                }
+                sdsl::int_vector_reference<sdsl::int_vector<>> field(&words[1], offset, width);
+                field = value;
+                ASSERT_EQ(words, expected) << "width=" << unsigned(width) << ", offset=" << unsigned(offset);
+            }
+        }
+    }
 }
 
 } // namespace
