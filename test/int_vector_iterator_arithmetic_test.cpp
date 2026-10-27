@@ -27,7 +27,10 @@ void check_iterators(uint8_t width)
         auto const & view = values;
         std::vector<uint64_t> expected(size);
         for (size_t i = 0; i < size; ++i)
-            values[i] = expected[i] = random() & mask;
+        {
+            expected[i] = random() & mask;
+            values[i] = expected[i];
+        }
 
         ASSERT_EQ(values.end() - values.begin(), difference_type(size));
         ASSERT_EQ(view.end() - view.begin(), difference_type(size));
@@ -54,9 +57,13 @@ void check_iterators(uint8_t width)
                 mutable_first[offset] = expected[target];
                 ASSERT_EQ(view[target], expected[target]);
                 if (target)
+                {
                     ASSERT_EQ(view[target - 1], expected[target - 1]);
+                }
                 if (target + 1 < size)
+                {
                     ASSERT_EQ(view[target + 1], expected[target + 1]);
+                }
             }
         }
 

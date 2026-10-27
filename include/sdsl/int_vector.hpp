@@ -285,7 +285,7 @@ private:
     template <typename Self>
     static auto iterator_at(Self & self, size_type index) noexcept
     {
-        if constexpr (t_width >= 8 && 64 % t_width == 0)
+        if constexpr (t_width >= 8 && std::has_single_bit(t_width))
             return self.begin() + index;
         else
         {
@@ -300,7 +300,7 @@ private:
         assert(idx < self.size());
 #if defined(__clang__) && defined(__x86_64__)
         // Keep indexed reads on the original decoder when specializing iterator scans.
-        if constexpr (std::is_const_v<Self> && !(t_width >= 8 && 64 % t_width == 0) && t_width > 1)
+        if constexpr (std::is_const_v<Self> && !(t_width >= 8 && std::has_single_bit(t_width)) && t_width > 1)
         {
             if constexpr (t_width <= 32)
                 return self.get_int(idx * t_width, t_width);
