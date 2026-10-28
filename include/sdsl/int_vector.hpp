@@ -1107,7 +1107,7 @@ public:
      * \param x 64bit integer to assign
      * \return A const_reference to the assigned reference
      */
-    int_vector_reference & operator=(value_type x) noexcept
+    [[gnu::always_inline]] int_vector_reference & operator=(value_type x) noexcept
     {
         auto width = detail::iterator_fixed_width<t_int_vector> ? detail::iterator_fixed_width<t_int_vector> : m_len;
         detail::write_packed_integer(m_word, x, m_offset, width);
@@ -1216,10 +1216,13 @@ template <class t_int_vector>
 #endif
 inline void swap(int_vector_reference<t_int_vector> x, int_vector_reference<t_int_vector> y) noexcept
 {
-    // TODO: more efficient solution?
-    typename int_vector_reference<t_int_vector>::value_type tmp = x;
-    x = y;
-    y = tmp;
+    typename int_vector_reference<t_int_vector>::value_type const a = x, b = y;
+    // Sorting narrow values swaps many equal pairs; skipping them saves two packed writes.
+    if (a != b)
+    {
+        x = b;
+        y = a;
+    }
 }
 
 // For C++11
@@ -1304,16 +1307,20 @@ public:
     {
         return !bool(*this) && bool(x);
     }
+
+    friend void swap<>(int_vector_reference x, int_vector_reference y) noexcept;
 };
 
 // For C++11
 template <>
 inline void swap(int_vector_reference<bit_vector> x, int_vector_reference<bit_vector> y) noexcept
 {
-    // TODO: more efficient solution?
-    bool tmp = x;
-    x = y;
-    y = tmp;
+    bool const a = x, b = y;
+    if (a != b)
+    {
+        *x.m_word ^= x.m_mask;
+        *y.m_word ^= y.m_mask;
+    }
 }
 
 // For C++11
