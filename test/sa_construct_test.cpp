@@ -1,4 +1,5 @@
 #include <map>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,52 @@ TEST_F(sa_construct_test, compare)
     }
     // Remove all files
     util::delete_all_files(config.file_map);
+}
+
+TEST_F(sa_construct_test, mapped_output_alignment)
+{
+    // Exercise every payload alignment, both native sort widths, and packed output.
+    std::string const text = std::string("banana_mississippi") + '\0';
+    std::vector<uint64_t> expected(text.size());
+    std::iota(expected.begin(), expected.end(), 0);
+    std::sort(expected.begin(), expected.end(), [&](auto a, auto b) {
+        return text.substr(a) < text.substr(b);
+    });
+    for (size_t prefix_size = 0; prefix_size < 8; ++prefix_size)
+        for (uint8_t width : {5, 32, 64})
+        {
+            auto file = cache_file_name("aligned_sa", config);
+            std::string const prefix(prefix_size, 'x');
+            {
+                osfstream out(file, std::ios::binary);
+                out.write(prefix.data(), prefix.size());
+                int_vector<>(text.size(), 0, width).serialize(out);
+            }
+            {
+                int_vector_mapper<> sa(file, false, false, prefix_size);
+                auto bytes = reinterpret_cast<unsigned char const *>(text.data());
+                if (width == 64)
+                    detail::sort_sa_inplace<int64_t>(bytes, text.size(), sa);
+                else
+                    algorithm::calculate_sa(bytes, text.size(), sa);
+                EXPECT_EQ(text.size(), sa.size());
+                EXPECT_EQ(width, sa.width());
+                for (size_t i = 0; i < expected.size(); ++i)
+                    ASSERT_EQ(expected[i], sa[i]);
+            }
+            isfstream in(file, std::ios::binary);
+            std::string got_prefix(prefix_size, '\0');
+            in.read(got_prefix.data(), got_prefix.size());
+            EXPECT_EQ(prefix, got_prefix);
+            int_vector<> loaded;
+            loaded.load(in);
+            EXPECT_EQ(width, loaded.width());
+            ASSERT_EQ(text.size(), loaded.size());
+            for (size_t i = 0; i < expected.size(); ++i)
+                ASSERT_EQ(expected[i], loaded[i]);
+            in.close();
+            sdsl::remove(file);
+        }
 }
 
 } // namespace
