@@ -1,5 +1,6 @@
 #include <array>
 #include <random>
+#include <sstream>
 #include <string>
 #include <type_traits>
 
@@ -42,6 +43,7 @@ class hyb_select_test : public ::testing::Test
 using rates = ::testing::Types<std::integral_constant<uint32_t, 1>,
                                std::integral_constant<uint32_t, 2>,
                                std::integral_constant<uint32_t, 4>,
+                               std::integral_constant<uint32_t, 15>,
                                std::integral_constant<uint32_t, 16>,
                                std::integral_constant<uint32_t, 64>>;
 TYPED_TEST_SUITE(hyb_select_test, rates, );
@@ -135,6 +137,61 @@ TYPED_TEST(hyb_select_test, empty_superblocks)
     check_select<TypeParam::value>(bits);
     bits.flip();
     check_select<TypeParam::value>(bits);
+}
+
+// Based on upstream 709012618b611557a0d03861d0901f5b53a63cf0; also check
+// select and stream round trips through the fork's shared block locator.
+template <uint32_t rate>
+void check_hblock_boundary()
+{
+    using vector_type = sdsl::hyb_vector<rate>;
+    uint64_t const boundary = uint64_t{1} << 31;
+    uint64_t const begin = boundary - 16 * 256;
+    sdsl::bit_vector bits(boundary + 16 * 256, 0);
+    std::mt19937_64 rng{};
+    for (uint64_t i = begin; i < bits.size(); ++i)
+        bits[i] = rng() & 1;
+
+    vector_type original(bits);
+    std::stringstream stream;
+    original.serialize(stream);
+    vector_type loaded;
+    loaded.load(static_cast<std::istream &>(stream));
+    for (auto const * vector : {&original, &loaded})
+    {
+        typename vector_type::rank_1_type rank1(vector);
+        typename vector_type::rank_0_type rank0(vector);
+        typename vector_type::select_1_type select1(vector);
+        typename vector_type::select_0_type select0(vector);
+        uint64_t ones = 0;
+        for (uint64_t i = begin; i < bits.size(); ++i)
+        {
+            ASSERT_EQ(bits[i], (*vector)[i]) << "i=" << i;
+            ASSERT_EQ(ones, rank1(i)) << "i=" << i;
+            ASSERT_EQ(i - ones, rank0(i)) << "i=" << i;
+            if (bits[i])
+                ASSERT_EQ(i, select1(++ones)) << "i=" << i;
+            else
+                ASSERT_EQ(i, select0(i + 1 - ones)) << "i=" << i;
+        }
+        EXPECT_EQ(ones, rank1(bits.size()));
+        EXPECT_EQ(bits.size() - ones, rank0(bits.size()));
+    }
+}
+
+TEST(hyb_select_boundary_test, nondividing_rate)
+{
+    check_hblock_boundary<15>();
+}
+
+TEST(hyb_select_boundary_test, another_nondividing_rate)
+{
+    check_hblock_boundary<3>();
+}
+
+TEST(hyb_select_boundary_test, default_rate)
+{
+    check_hblock_boundary<16>();
 }
 
 } // namespace

@@ -228,15 +228,18 @@ public:
             // Update sblock header.
             if (!(block_id % k_sblock_rate))
             {
-                uint32_t * ptr = (uint32_t *)(((uint8_t *)m_sblock_header.data()) + k_sblock_header_size * sblock_id);
-                *ptr++ = trunk_ptr - m_hblock_header[2 * hblock_id];
-                *ptr = tot_rank - m_hblock_header[2 * hblock_id + 1];
+                uint8_t * ptr = ((uint8_t *)m_sblock_header.data()) + k_sblock_header_size * sblock_id;
+                uint32_t const sblock_trunk_ptr = trunk_ptr - m_hblock_header[2 * hblock_id];
+                uint32_t const sblock_rank = tot_rank - m_hblock_header[2 * hblock_id + 1];
+                std::memcpy(ptr, &sblock_trunk_ptr, sizeof(sblock_trunk_ptr));
+                std::memcpy(ptr + 4, &sblock_rank, sizeof(sblock_rank));
 
                 // If the sblock is uniform, flip the bit.
                 if (sblock_id && (!sblock_ones || sblock_ones == k_sblock_size))
                 {
-                    ptr = (uint32_t *)(((uint8_t *)m_sblock_header.data()) + k_sblock_header_size * (sblock_id - 1));
-                    *ptr |= 0x80000000;
+                    ptr -= k_sblock_header_size;
+                    uint32_t const flagged_trunk_ptr = detail::load_unaligned<uint32_t>(static_cast<void const *>(ptr)) | 0x80000000;
+                    std::memcpy(ptr, &flagged_trunk_ptr, sizeof(flagged_trunk_ptr));
                 }
 
                 // Reset the number of ones in sblock.
@@ -311,11 +314,8 @@ public:
                     // Copy original 256 bits from bv into trunk.
                     if (block_end <= m_size)
                     {
-                        for (uint8_t i = 0; i < 4; ++i)
-                        {
-                            *((uint64_t *)(((uint8_t *)m_trunk.data()) + trunk_ptr)) = *(bv_ptr + i);
-                            trunk_ptr += 8;
-                        }
+                        std::memcpy(((uint8_t *)m_trunk.data()) + trunk_ptr, bv_ptr, k_block_bytes);
+                        trunk_ptr += k_block_bytes;
                     }
                     else
                     {
@@ -328,7 +328,7 @@ public:
                                 if (bit)
                                     w |= ((uint64_t)1 << (j - i));
                             }
-                            *((uint64_t *)(((uint8_t *)m_trunk.data()) + trunk_ptr)) = w;
+                            std::memcpy(((uint8_t *)m_trunk.data()) + trunk_ptr, &w, sizeof(w));
                             trunk_ptr += 8;
                         }
                     }
@@ -803,7 +803,7 @@ uint32_t const hyb_vector<k_sblock_rate>::k_sblock_header_size = 8 + 2 * k_sbloc
 template <uint32_t k_sblock_rate>
 uint32_t const hyb_vector<k_sblock_rate>::k_sblock_size = 256 * k_sblock_rate;
 template <uint32_t k_sblock_rate>
-uint32_t const hyb_vector<k_sblock_rate>::k_hblock_rate = (1U << 31) / 256;
+uint32_t const hyb_vector<k_sblock_rate>::k_hblock_rate = (1U << 31) / 256 / k_sblock_rate * k_sblock_rate;
 
 template <uint8_t t_bp>
 struct rank_result

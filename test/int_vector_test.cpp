@@ -111,6 +111,34 @@ TEST(int_vector_copy, preserves_bits_after_width_change)
     }
 }
 
+template <uint8_t width>
+void check_const_values()
+{
+    using vector_type = sdsl::int_vector<width>;
+    static_assert(!std::is_reference_v<typename vector_type::const_reference>);
+    static_assert(!std::is_reference_v<decltype(std::declval<vector_type const &>()[0])>);
+    vector_type values{1, 2, 3};
+    auto const & view = values;
+    EXPECT_EQ(*view.begin(), view.front());
+    EXPECT_EQ(*(view.begin() + 1), view.at(1));
+    EXPECT_EQ(*(view.begin() + 2), view.back());
+    auto const & element = view[1];
+    values[1] = 7;
+    EXPECT_EQ(typename vector_type::value_type{2}, element);
+    EXPECT_EQ(typename vector_type::value_type{7}, view[1]);
+}
+
+TEST(int_vector_const_access, native_width_values)
+{
+    check_const_values<8>();
+    check_const_values<16>();
+    check_const_values<32>();
+    check_const_values<64>();
+    static_assert(!std::is_reference_v<sdsl::int_vector<0>::const_reference>);
+    static_assert(!std::is_reference_v<sdsl::int_vector<1>::const_reference>);
+    static_assert(!std::is_reference_v<sdsl::int_vector<7>::const_reference>);
+}
+
 // The fixture for testing class int_vector.
 class int_vector_test : public ::testing::Test
 {
