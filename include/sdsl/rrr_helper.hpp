@@ -22,6 +22,8 @@
 #ifndef SDSL_RRR_HELPER
 #define SDSL_RRR_HELPER
 
+#include <cassert>
+
 #include "bits.hpp"
 #include "uint128_t.hpp"
 #include "uint256_t.hpp"

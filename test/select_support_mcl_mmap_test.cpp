@@ -18,7 +18,14 @@ namespace
 
 template <class T>
 class select_support_mcl_mmap_test : public ::testing::Test
-{};
+{
+protected:
+    void SetUp() override
+    {
+        if (sdsl::is_ram_file(temp_dir))
+            GTEST_SKIP() << "OS mmap requires a disk file";
+    }
+};
 
 using testing::Types;
 
