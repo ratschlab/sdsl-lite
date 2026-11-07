@@ -1115,11 +1115,19 @@ public:
         }
     }
 
+    // Compatibility bridge for bounded legacy loaders. The owner supplies storage;
+    // this context never unmaps it. Only const views may be exposed to callers.
+    mmap_context(std::string filename, std::shared_ptr<const void> owner,
+                 const uint8_t *data, uint64_t bytes)
+        : m_file_name(std::move(filename)), m_mapped_data(const_cast<uint8_t *>(data)),
+          m_file_size_bytes(bytes), m_owner(std::move(owner)) {}
+
     mmap_context(mmap_context const &) = delete;
     mmap_context & operator=(mmap_context const &) = delete;
 
     ~mmap_context()
     {
+        if (m_owner) return;
         if (m_mapped_data)
         {
             auto ret = memory_manager::mem_unmap(m_fd, m_mapped_data, m_file_size_bytes);
@@ -1156,6 +1164,7 @@ private:
     uint8_t * m_mapped_data = nullptr;
     uint64_t m_file_size_bytes = 0;
     int m_fd = -1;
+    std::shared_ptr<const void> m_owner;
 };
 
 class mmap_ifstream : public std::ifstream
@@ -1180,6 +1189,13 @@ public:
         if (!m_mmap_context)
             throw std::runtime_error("mmap_ifstream: stream not open");
         return m_mmap_context->filename();
+    }
+
+protected:
+    template<class Map>
+    mmap_ifstream(std::string const &filename, std::ios_base::openmode mode, Map map)
+        : std::ifstream(filename, mode) {
+        if (good()) m_mmap_context = map();
     }
 
 private:

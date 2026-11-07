@@ -180,17 +180,15 @@ public:
     {
         size_type size_in_bits = 0;
         uint8_t int_width = t_width;
+        if (!is_plain)
         {
             isfstream f(filename, std::ifstream::binary);
             if (!f.is_open())
             {
                 throw std::runtime_error("int_vector_mapper: file " + m_file_name + " does not exist.");
             }
-            if (!is_plain)
-            {
-                f.seekg(file_offset);
-                m_data_offset = file_offset + int_vector<t_width>::read_header(size_in_bits, int_width, f);
-            }
+            f.seekg(file_offset);
+            m_data_offset = file_offset + int_vector<t_width>::read_header(size_in_bits, int_width, f);
         }
 
         m_file_size_bytes = util::file_size(m_file_name);
@@ -233,6 +231,8 @@ public:
         {
             std::string mmap_error =
                 std::string("int_vector_mapper: mmap error. ") + std::string(util::str_from_errno());
+            memory_manager::close_file_for_mmap(m_fd);
+            m_fd = -1;
             throw std::runtime_error(mmap_error);
         }
 
