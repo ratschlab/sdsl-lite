@@ -17,6 +17,8 @@ set (CMAKE_REQUIRED_FLAGS "")
 if (HAVE_FFAST_MATH)
     message (STATUS "${Green}Compiler supports fast math${ColourReset}")
     checkandappendcompilerflags ("Release" "-ffast-math")
+    # DAC construction uses infinity as its initial minimum-cost bound.
+    checkandappendcompilerflags ("Release" "-fno-finite-math-only")
 else ()
     message (STATUS "${Red}Compiler does NOT support fast math${ColourReset}")
 endif ()
