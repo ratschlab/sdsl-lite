@@ -1,0 +1,62 @@
+name: Sanitizer
+
+on:
+  schedule:
+    - cron: "0 4 * * SAT"
+  workflow_dispatch:
+
+concurrency:
+  group: sanitizer-actions
+  cancel-in-progress: true
+
+env:
+  TZ: Europe/Berlin
+  UBSAN_OPTIONS: print_stacktrace=1
+
+defaults:
+  run:
+    shell: bash -Eexuo pipefail {0}
+
+jobs:
+  build:
+    name: ${{ matrix.compiler }} ${{ matrix.cereal == 'ON' && 'cereal' || '' }}
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'xxsds' || github.event_name == 'workflow_dispatch'
+    env:
+      ASAN_OPTIONS: strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1:detect_leaks=1
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: ["clang-latest", "gcc-latest"]
+        cereal: ["OFF", "ON"]
+        include:
+          - compiler: clang-latest
+            cxx_flags: "-fno-omit-frame-pointer -fsanitize=address,undefined,float-divide-by-zero,local-bounds,nullability -fno-sanitize-recover=all"
+
+          - compiler: gcc-latest
+            cxx_flags: "-fno-omit-frame-pointer -fsanitize=address,undefined,float-divide-by-zero -fno-sanitize-recover=all"
+    container:
+      image: ghcr.io/seqan/${{ matrix.compiler }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Configure tests
+        run: |
+          mkdir ci_build && cd ci_build
+          cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                   -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g" \
+                   -DCMAKE_CXX_FLAGS="-pedantic -Wall -Wextra -Werror ${{ matrix.cxx_flags }}" \
+                   -DCMAKE_CXX_STANDARD=23 \
+                   -DSDSL_CEREAL=${{ matrix.cereal }}
+          make gtest_build
+
+      - name: Build tests
+        working-directory: ci_build
+        run: make -k sdsl_test_targets sdsl_examples sdsl_tutorials
+
+      - name: Run tests
+        working-directory: ci_build
+        run: ctest . -j --output-on-failure --no-tests=error -E 'faust|moby' -R '\-im'
