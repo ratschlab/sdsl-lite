@@ -430,9 +430,7 @@ private:
     template <typename T>
     static T read_unaligned(std::span<uint8_t const> data, size_type index = 0)
     {
-        T value;
-        std::memcpy(&value, &data[sizeof(T) * index], sizeof(value));
-        return value;
+        return detail::load_unaligned<T>(static_cast<void const *>(data.data() + sizeof(T) * index));
     }
 
     // Access uses a zero-based position, rank a prefix length, and select a zero-based occurrence index.

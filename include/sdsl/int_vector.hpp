@@ -793,15 +793,7 @@ public:
             return false;
         if (empty())
             return true;
-        uint64_t const * data1 = v.data();
-        uint64_t const * data2 = data();
-        for (size_type i = 0; i < bit_data_size() - 1; ++i)
-        {
-            if (detail::load_unaligned(data1++) != detail::load_unaligned(data2++))
-                return false;
-        }
-        uint8_t l = 64 - ((bit_data_size() << 6) - m_size);
-        return (detail::load_unaligned(data1) & bits::lo_set[l]) == (detail::load_unaligned(data2) & bits::lo_set[l]);
+        return detail::equal_packed_bits(v.data(), data(), bit_size());
     }
 
     //! Equality operator for two int_vectors.

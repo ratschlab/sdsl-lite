@@ -20,6 +20,7 @@
 #endif
 
 #include <bit>
+#include <sdsl/unaligned_access.hpp>
 #include <sdsl/packed_word_iterator.hpp>
 #include <cstring>
 #include <type_traits>
@@ -39,21 +40,6 @@
 //! Namespace for the succinct data structure library.
 namespace sdsl
 {
-// Packed serialized data can start at an unaligned byte offset.
-// memcpy permits that access and compiles to a native load where supported.
-namespace detail {
-template <class Word>
-constexpr Word load_unaligned(Word const *address) noexcept
-{
-    static_assert(std::is_integral_v<Word>);
-    if (std::is_constant_evaluated()) return *address;
-    Word value;
-    std::memcpy(&value, reinterpret_cast<const char *>(address), sizeof(value));
-    return value;
-}
-} // namespace detail
-
-
 //! A helper class for bitwise tricks on 64 bit words.
 /*!
  * bits is a helper class for bitwise tricks and
@@ -989,6 +975,27 @@ template <typename T>
 constexpr uint8_t bits_impl<T>::lt_lo[256];
 
 using bits = bits_impl<>;
+
+namespace detail
+{
+// Compare bit_size payload bits, ignoring padding in the final word.
+// Readers may be aligned pointers or unaligned word iterators.
+// The rounded word capacity must be representable, as for int_vector storage.
+template <class LeftWords, class RightWords>
+inline bool equal_packed_bits(LeftWords left, RightWords right, uint64_t bit_size) noexcept
+{
+    if (!bit_size)
+        return true;
+    auto const word_count = (bit_size + 63) >> 6;
+    auto const last_word = word_count - 1;
+    for (uint64_t i = 0; i < last_word; ++i)
+        if (load_unaligned(left++) != load_unaligned(right++))
+            return false;
+    uint8_t const length = 64 - ((word_count << 6) - bit_size);
+    auto const mask = bits::lo_set[length];
+    return (load_unaligned(left) & mask) == (load_unaligned(right) & mask);
+}
+} // namespace detail
 
 } // end namespace sdsl
 
