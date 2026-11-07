@@ -72,6 +72,33 @@ inline void construct_sa_se(cache_config & config)
     register_cache_file(conf::KEY_SA, config);
 }
 
+namespace detail
+{
+// divsufsort writes native integers; a serialized vector payload need not be aligned.
+template <class Index, class Vector>
+void sort_sa_inplace(unsigned char const * text, typename Vector::size_type len, Vector & sa)
+{
+    uint8_t const output_width = sa.width();
+    constexpr uint8_t native_width = sizeof(Index) * 8;
+    sa.width(native_width);
+    bool const needs_padding = reinterpret_cast<uintptr_t>(sa.data()) % alignof(Index) != 0;
+    // One extra element leaves room to align the output inside the same allocation.
+    sa.resize(len + needs_padding);
+    auto * bytes = reinterpret_cast<unsigned char *>(sa.data());
+    size_t const padding = (alignof(Index) - reinterpret_cast<uintptr_t>(bytes) % alignof(Index)) % alignof(Index);
+    auto * aligned = reinterpret_cast<Index *>(bytes + padding);
+    divsufsort(text, aligned, static_cast<Index>(len));
+    // Pack directly from the aligned output, without a separate full-array copy.
+    if (output_width != native_width || padding)
+    {
+        for (typename Vector::size_type i = 0, pos = 0; i < len; ++i, pos += output_width)
+            sa.set_int(pos, aligned[i], output_width);
+    }
+    sa.width(output_width);
+    sa.resize(len);
+}
+} // namespace detail
+
 namespace algorithm
 {
 
@@ -106,19 +133,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
         uint8_t sa_width = sa.width();
         if (32 == t_width or (0 == t_width and 32 >= sa_width))
         {
-            sa.width(32);
-            sa.resize(len);
-            divsufsort(c, (int32_t *)sa.data(), (int32_t)len);
-            // copy integers back to the right positions
-            if (sa_width != 32)
-            {
-                for (size_type i = 0, p = 0; i < len; ++i, p += sa_width)
-                {
-                    sa.set_int(p, sa.get_int(i << 5, 32), sa_width);
-                }
-                sa.width(sa_width);
-                sa.resize(len);
-            }
+            detail::sort_sa_inplace<int32_t>(c, len, sa);
         }
         else
         {
@@ -137,20 +152,7 @@ void calculate_sa(unsigned char const * c, typename t_int_vec::size_type len, t_
     }
     else
     {
-        uint8_t sa_width = sa.width();
-        sa.width(64);
-        sa.resize(len);
-        divsufsort64(c, (int64_t *)sa.data(), len);
-        // copy integers back to the right positions
-        if (sa_width != 64)
-        {
-            for (size_type i = 0, p = 0; i < len; ++i, p += sa_width)
-            {
-                sa.set_int(p, sa.get_int(i << 6, 64), sa_width);
-            }
-            sa.width(sa_width);
-            sa.resize(len);
-        }
+        detail::sort_sa_inplace<int64_t>(c, len, sa);
     }
 }
 
