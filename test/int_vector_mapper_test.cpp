@@ -383,7 +383,7 @@ TEST_F(int_vector_mapper_test, temp_buffer_test)
 
 TEST_F(int_vector_mapper_test, mapping_failure_releases_descriptor)
 {
-    if (temp_dir == "@")
+    if (sdsl::is_ram_file(temp_dir))
         GTEST_SKIP() << "Read-only OS mapping requires a disk file";
     auto const file = temp_dir + "/mapper_empty_file";
     {
@@ -404,7 +404,7 @@ TEST_F(int_vector_mapper_test, mapping_failure_releases_descriptor)
 // The view receives payload boundaries, not a serialized vector header.
 TEST_F(int_vector_mapper_test, packed_view_rank_select)
 {
-    if (temp_dir == "@")
+    if (sdsl::is_ram_file(temp_dir))
         GTEST_SKIP() << "Read-only OS mapping requires a disk file";
     using view_type = sdsl::packed_vector_view<1>;
     auto const file = temp_dir + "/packed_view_payload";
@@ -438,12 +438,16 @@ TEST_F(int_vector_mapper_test, packed_view_rank_select)
                 ASSERT_EQ(zeros, rank_zero(i));
                 ASSERT_EQ(expected[i], view[i]);
                 if (expected[i])
+                {
                     ASSERT_EQ(i, select(++ones));
+                }
                 else
                 {
                     ASSERT_EQ(i, select_zero(++zeros));
                     if (zeros <= 4)
+                    {
                         ASSERT_EQ(i, scan_zero(zeros));
+                    }
                 }
             }
             ASSERT_EQ(ones, rank(size));
@@ -457,7 +461,9 @@ TEST_F(int_vector_mapper_test, packed_view_rank_select)
             native_select.load(static_cast<std::istream &>(ss), &expected);
             ASSERT_EQ(ones, native_rank(size));
             if (ones)
+            {
                 ASSERT_EQ(select(ones), native_select(ones));
+            }
             auto owned = std::move(view).into_owned();
             ASSERT_EQ(expected, owned);
             owned.resize(size + 65);
@@ -501,7 +507,7 @@ TEST_F(int_vector_mapper_test, packed_view_ownership_and_bounds)
 
 TEST_F(int_vector_mapper_test, packed_view_detaches_fork_mapped_vector)
 {
-    if (temp_dir == "@")
+    if (sdsl::is_ram_file(temp_dir))
         GTEST_SKIP() << "Read-only OS mapping requires a disk file";
     auto const file = temp_dir + "/packed_view_mapped_input";
     sdsl::bit_vector expected(65, 1);
@@ -555,7 +561,9 @@ TEST_F(int_vector_mapper_test, packed_comparison_preserves_payload_and_dimension
                 EXPECT_FALSE(view_type(std::move(changed)) == mapped);
             }
             if (bits)
+            {
                 EXPECT_FALSE(owned == view_type::from_bytes(bytes, std::span(*bytes).subspan(offset), bits - 1, 1));
+            }
         }
     }
     // int_vector's same-template comparison uses bit size/payload; views also require equal widths.
