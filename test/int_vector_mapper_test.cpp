@@ -401,6 +401,69 @@ TEST_F(int_vector_mapper_test, mapping_failure_releases_descriptor)
     sdsl::remove(file);
 }
 
+TEST_F(int_vector_mapper_test, read_only_views_release_os_descriptors)
+{
+    if (sdsl::is_ram_file(temp_dir))
+        GTEST_SKIP() << "Descriptor reuse requires a disk file";
+    auto const file = temp_dir + "/mapper_retained_views";
+    sdsl::bit_vector bits(65, 1);
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write(reinterpret_cast<char const *>(bits.data()), bits.capacity() / 8);
+        ASSERT_TRUE(out);
+    }
+    int const before = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(before, 0);
+    ::close(before);
+    using view_type = sdsl::packed_vector_view<1>;
+    std::vector<view_type> views;
+    for (size_t i = 0; i < 64; ++i)
+    {
+        auto owner = std::make_shared<view_type::byte_mapper const>(file, true);
+        views.push_back(view_type::from_mapping(owner, 0, bits.size()));
+    }
+    for (auto const & view : views)
+    {
+        EXPECT_EQ(1u, view[64]);
+        auto editable = view.to_owned();
+        editable[64] = 0;
+        EXPECT_EQ(1u, view[64]);
+    }
+    int const reused = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(reused, 0);
+    EXPECT_EQ(before, reused);
+    views.clear();
+    // Releasing a mapping must not close a descriptor reused by another file.
+    EXPECT_EQ(0, ::close(reused));
+    sdsl::remove(file);
+}
+
+TEST_F(int_vector_mapper_test, read_only_delete_on_close_survives_moves)
+{
+    using mapper_type = sdsl::int_vector_mapper<64, std::ios_base::in>;
+    auto const first = temp_dir + "/mapper_delete_first";
+    auto const second = temp_dir + "/mapper_delete_second";
+    sdsl::int_vector<64> values(8, 7);
+    ASSERT_TRUE(sdsl::store_to_file(values, first));
+    ASSERT_TRUE(sdsl::store_to_file(values, second));
+    {
+        mapper_type source(first, false, true);
+        {
+            mapper_type destination(second, false, true);
+            destination = std::move(source);
+            EXPECT_FALSE(sdsl::isfstream(second).is_open());
+            mapper_type moved(std::move(destination));
+            EXPECT_EQ(7u, std::as_const(moved)[0]);
+            EXPECT_TRUE(sdsl::isfstream(first).is_open());
+        }
+        EXPECT_FALSE(sdsl::isfstream(first).is_open());
+        ASSERT_TRUE(sdsl::store_to_file(values, first));
+    }
+    // The moved-from object must not delete a newly created file at that path.
+    EXPECT_TRUE(sdsl::isfstream(first).is_open());
+    sdsl::remove(first);
+}
+
 // The view receives payload boundaries, not a serialized vector header.
 TEST_F(int_vector_mapper_test, packed_view_rank_select)
 {
