@@ -9,6 +9,50 @@
 
 namespace
 {
+TEST(unaligned_access_test, packed_writes_at_each_byte_offset)
+{
+    constexpr auto compile_time_write = [] {
+        uint64_t words[2] = {};
+        uint64_t * cursor = words;
+        uint8_t offset = 60;
+        sdsl::bits::write_int_and_move(cursor, 0xab, offset, 8);
+        return words[0] == (uint64_t{0xb} << 60) && words[1] == 0xa
+            && cursor == words + 1 && offset == 4;
+    };
+    static_assert(compile_time_write());
+    for (size_t byte_offset = 0; byte_offset < 8; ++byte_offset)
+        for (uint8_t offset = 0; offset < 64; ++offset)
+            for (uint8_t width = 0; width <= 64; ++width)
+                for (bool advance : {false, true})
+                {
+                    alignas(uint64_t) unsigned char storage[32];
+                    unsigned char expected[32];
+                    std::memset(storage, 0xa5, sizeof(storage));
+                    std::memcpy(expected, storage, sizeof(storage));
+                    uint64_t const value = 0x0123456789abcdefULL;
+                    for (uint8_t bit = 0; bit < width; ++bit)
+                    {
+                        size_t const pos = 8 * byte_offset + offset + bit;
+                        auto const mask = static_cast<unsigned char>(1u << (pos % 8));
+                        expected[pos / 8] = (expected[pos / 8] & ~mask)
+                            | ((value >> bit & 1) ? mask : 0);
+                    }
+                    auto * start = reinterpret_cast<uint64_t *>(storage + byte_offset);
+                    auto * cursor = start;
+                    uint8_t next_offset = offset;
+                    if (advance)
+                    {
+                        sdsl::bits::write_int_and_move(cursor, value, next_offset, width);
+                        EXPECT_EQ(start + ((offset + width) / 64), cursor);
+                        EXPECT_EQ((offset + width) % 64, next_offset);
+                    }
+                    else
+                        sdsl::bits::write_int(cursor, value, offset, width);
+                    ASSERT_EQ(0, std::memcmp(storage, expected, sizeof(storage)))
+                        << byte_offset << ':' << unsigned(offset) << ':' << unsigned(width);
+                }
+}
+
 TEST(unaligned_access_test, integer_loads_at_each_byte_offset)
 {
     constexpr uint64_t aligned = 0x0123456789abcdefULL;

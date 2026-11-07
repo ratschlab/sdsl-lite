@@ -98,6 +98,42 @@ TEST_F(lab_storage_test, mapper_at_file_offset)
     EXPECT_EQ(91u, got[19]);
 }
 
+TEST_F(lab_storage_test, writable_mapper_preserves_surrounding_bits)
+{
+    for (uint8_t width : {1, 7, 13, 32, 64})
+        for (size_t prefix_size = 0; prefix_size < 8; ++prefix_size)
+        {
+            std::string const prefix(prefix_size, 'x');
+            sdsl::int_vector<> expected(81, 0, width);
+            {
+                std::ofstream out(file, std::ios::binary);
+                out.write(prefix.data(), prefix.size());
+                expected.serialize(out);
+            }
+            {
+                sdsl::int_vector_mapper<> mapped(file, false, false, prefix_size);
+                for (size_t i = 0; i < mapped.size(); ++i)
+                    mapped[i] = expected[i] = i * 17;
+                for (size_t i = 1; i < mapped.size(); i += 3)
+                {
+                    mapped[i] += 5;
+                    expected[i] += 5;
+                }
+                mapped.resize(103);
+                expected.resize(103);
+                for (size_t i = 81; i < mapped.size(); ++i)
+                    mapped[i] = expected[i] = i * 7;
+            }
+            std::ifstream in(file, std::ios::binary);
+            std::string stored_prefix(prefix_size, '\0');
+            in.read(stored_prefix.data(), stored_prefix.size());
+            EXPECT_EQ(prefix, stored_prefix);
+            sdsl::int_vector<> stored;
+            stored.load(in);
+            EXPECT_EQ(expected, stored);
+        }
+}
+
 TEST_F(lab_storage_test, buffer_iterator_preserves_v3_operations)
 {
     using buffer_type = sdsl::int_vector_buffer<>;

@@ -713,23 +713,20 @@ template <typename T>
 constexpr void bits_impl<T>::write_int(uint64_t * word, uint64_t x, uint8_t offset, uint8_t const len)
 {
     x &= bits_impl<T>::lo_set[len];
+    uint64_t low = detail::load_unaligned(word);
     if (offset + len < 64)
     {
-        *word &= ((bits_impl<T>::all_set << (offset + len)) | bits_impl<T>::lo_set[offset]); // mask 1..10..01..1
-        *word |= (x << offset);
-        //		*word ^= ((*word ^ x) & (bits_impl<T>::lo_set[len] << offset) );
-        //      surprisingly the above line is slower than the lines above
+        low &= (bits_impl<T>::all_set << (offset + len)) | bits_impl<T>::lo_set[offset];
+        detail::store_unaligned(word, low | (x << offset));
     }
     else
     {
-        *word &= ((bits_impl<T>::lo_set[offset])); // mask 0....01..1
-        *word |= (x << offset);
+        low &= bits_impl<T>::lo_set[offset];
+        detail::store_unaligned(word, low | (x << offset));
         if ((offset = (offset + len) & 0x3F))
-        {                                                   // offset+len > 64
-            *(word + 1) &= (~bits_impl<T>::lo_set[offset]); // mask 1...10..0
-            //			*(word+1) &= bits_impl<T>::lo_unset[offset]; // mask 1...10..0
-            //          surprisingly the above line is slower than the line above
-            *(word + 1) |= (x >> (len - offset));
+        {
+            uint64_t high = detail::load_unaligned(word + 1) & ~bits_impl<T>::lo_set[offset];
+            detail::store_unaligned(word + 1, high | (x >> (len - offset)));
         }
     }
 }
@@ -737,29 +734,9 @@ constexpr void bits_impl<T>::write_int(uint64_t * word, uint64_t x, uint8_t offs
 template <typename T>
 constexpr void bits_impl<T>::write_int_and_move(uint64_t *& word, uint64_t x, uint8_t & offset, uint8_t const len)
 {
-    x &= bits_impl<T>::lo_set[len];
-    if (offset + len < 64)
-    {
-        *word &= ((bits_impl<T>::all_set << (offset + len)) | bits_impl<T>::lo_set[offset]); // mask 1..10..01..1
-        *word |= (x << offset);
-        offset += len;
-    }
-    else
-    {
-        *word &= ((bits_impl<T>::lo_set[offset])); // mask 0....01..1
-        *word |= (x << offset);
-        if ((offset = (offset + len)) > 64)
-        { // offset+len >= 64
-            offset &= 0x3F;
-            *(++word) &= (~bits_impl<T>::lo_set[offset]); // mask 1...10..0
-            *word |= (x >> (len - offset));
-        }
-        else
-        {
-            offset = 0;
-            ++word;
-        }
-    }
+    write_int(word, x, offset, len);
+    word += (offset + len) >> 6;
+    offset = (offset + len) & 0x3F;
 }
 
 template <typename T>

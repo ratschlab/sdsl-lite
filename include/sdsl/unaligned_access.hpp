@@ -22,5 +22,15 @@ constexpr Word load_unaligned(Word const * address) noexcept
         return *address;
     return load_unaligned<Word>(static_cast<void const *>(address));
 }
+
+template <class Word>
+constexpr void store_unaligned(Word * address, Word value) noexcept
+{
+    static_assert(std::is_trivially_copyable_v<Word>);
+    if (std::is_constant_evaluated())
+        *address = value;
+    else
+        std::memcpy(static_cast<void *>(address), &value, sizeof(value));
+}
 } // namespace sdsl::detail
 #endif
