@@ -119,12 +119,12 @@ struct rank_support_trait<0, 1>
 
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
-        return bits::cnt((~*(data + (idx >> 6))) & bits::lo_set[idx & 0x3F]);
+        return bits::cnt((~detail::load_unaligned(data + (idx >> 6))) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
-        return bits::cnt((~*(data + (idx >> 6))));
+        return bits::cnt((~detail::load_unaligned(data + (idx >> 6))));
     }
 
     static uint64_t init_carry()
@@ -145,12 +145,12 @@ struct rank_support_trait<1, 1>
 
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
-        return bits::cnt(*(data + (idx >> 6)) & bits::lo_set[idx & 0x3F]);
+        return bits::cnt(detail::load_unaligned(data + (idx >> 6)) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
-        return bits::cnt(*(data + (idx >> 6)));
+        return bits::cnt(detail::load_unaligned(data + (idx >> 6)));
     }
 
     static uint64_t init_carry()
@@ -172,15 +172,15 @@ struct rank_support_trait<10, 2>
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 0;
-        return bits::cnt(bits::map10(*data, carry) & bits::lo_set[idx & 0x3F]);
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 0;
+        return bits::cnt(bits::map10(detail::load_unaligned(data), carry) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 0;
-        return bits::cnt(bits::map10(*data, carry));
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 0;
+        return bits::cnt(bits::map10(detail::load_unaligned(data), carry));
     }
 
     static uint64_t init_carry()
@@ -202,15 +202,15 @@ struct rank_support_trait<01, 2>
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 1;
-        return bits::cnt(bits::map01(*data, carry) & bits::lo_set[idx & 0x3F]);
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 1;
+        return bits::cnt(bits::map01(detail::load_unaligned(data), carry) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 1;
-        return bits::cnt(bits::map01(*data, carry));
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 1;
+        return bits::cnt(bits::map01(detail::load_unaligned(data), carry));
     }
 
     static uint64_t init_carry()
@@ -234,15 +234,15 @@ struct rank_support_trait<00, 2>
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 1;
-        return bits::cnt((~(*data | ((*data) << 1 | carry))) & bits::lo_set[idx & 0x3F]);
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 1;
+        return bits::cnt((~(detail::load_unaligned(data) | ((detail::load_unaligned(data)) << 1 | carry))) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 1;
-        return bits::cnt(~(*data | ((*data) << 1 | carry)));
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 1;
+        return bits::cnt(~(detail::load_unaligned(data) | ((detail::load_unaligned(data)) << 1 | carry)));
     }
 
     static uint64_t init_carry()
@@ -266,15 +266,15 @@ struct rank_support_trait<11, 2>
     static uint32_t word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 0;
-        return bits::cnt((*data & ((*data) << 1 | carry)) & bits::lo_set[idx & 0x3F]);
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 0;
+        return bits::cnt((detail::load_unaligned(data) & ((detail::load_unaligned(data)) << 1 | carry)) & bits::lo_set[idx & 0x3F]);
     }
 
     static uint32_t full_word_rank(uint64_t const * data, size_type idx)
     {
         data = data + (idx >> 6);
-        uint64_t carry = (idx > 63) ? *(data - 1) >> 63 : 0;
-        return bits::cnt(*data & ((*data) << 1 | carry));
+        uint64_t carry = (idx > 63) ? detail::load_unaligned(data - 1) >> 63 : 0;
+        return bits::cnt(detail::load_unaligned(data) & ((detail::load_unaligned(data)) << 1 | carry));
     }
 
     static uint64_t init_carry()

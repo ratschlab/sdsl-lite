@@ -20,6 +20,8 @@
 #endif
 
 #include <bit>
+#include <cstring>
+#include <type_traits>
 #include <stddef.h>
 #include <stdint.h> // for uint64_t uint32_t declaration
 #ifdef __SSE4_2__
@@ -36,6 +38,20 @@
 //! Namespace for the succinct data structure library.
 namespace sdsl
 {
+// Packed serialized data can start at an unaligned byte offset.
+// memcpy permits that access and compiles to a native load where supported.
+namespace detail {
+template <class Word>
+constexpr Word load_unaligned(Word const *address) noexcept
+{
+    static_assert(std::is_integral_v<Word>);
+    if (std::is_constant_evaluated()) return *address;
+    Word value;
+    std::memcpy(&value, reinterpret_cast<const char *>(address), sizeof(value));
+    return value;
+}
+} // namespace detail
+
 
 //! A helper class for bitwise tricks on 64 bit words.
 /*!
@@ -758,11 +774,11 @@ constexpr void bits_impl<T>::write_int_and_move(uint64_t *& word, uint64_t x, ui
 template <typename T>
 constexpr uint64_t bits_impl<T>::read_int(uint64_t const * word, uint8_t offset, uint8_t const len)
 {
-    uint64_t w1 = (*word) >> offset;
+    uint64_t w1 = (detail::load_unaligned(word)) >> offset;
     if ((offset + len) > 64)
     {                                                                       // if offset+len > 64
         return w1 |                                                         // w1 or w2 adepted:
-               ((*(word + 1) & bits_impl<T>::lo_set[(offset + len) & 0x3F]) // set higher bits zero
+               ((detail::load_unaligned(word + 1) & bits_impl<T>::lo_set[(offset + len) & 0x3F]) // set higher bits zero
                 << (64 - offset));                                          // move bits to the left
     }
     else
@@ -774,13 +790,13 @@ constexpr uint64_t bits_impl<T>::read_int(uint64_t const * word, uint8_t offset,
 template <typename T>
 constexpr uint64_t bits_impl<T>::read_int_bounded(uint64_t const * word, uint8_t offset, uint8_t const len)
 {
-    return ((*word) >> offset) & bits_impl<T>::lo_set[len];
+    return ((detail::load_unaligned(word)) >> offset) & bits_impl<T>::lo_set[len];
 }
 
 template <typename T>
 constexpr uint64_t bits_impl<T>::read_int_and_move(uint64_t const *& word, uint8_t & offset, uint8_t const len)
 {
-    uint64_t w1 = (*word) >> offset;
+    uint64_t w1 = (detail::load_unaligned(word)) >> offset;
     if ((offset = (offset + len)) >= 64)
     { // if offset+len > 64
         if (offset == 64)
@@ -792,7 +808,7 @@ constexpr uint64_t bits_impl<T>::read_int_and_move(uint64_t const *& word, uint8
         else
         {
             offset &= 0x3F;
-            return w1 | (((*(++word)) & bits_impl<T>::lo_set[offset]) << (len - offset));
+            return w1 | (((detail::load_unaligned(++word)) & bits_impl<T>::lo_set[offset]) << (len - offset));
         }
     }
     else

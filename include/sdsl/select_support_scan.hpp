@@ -115,27 +115,27 @@ select_support_scan<t_b, t_pat_len>::select(size_type i) const
     size_type word_pos = 0;
     size_type word_off = 0;
     uint64_t carry = select_support_trait<t_b, t_pat_len>::init_carry(data, word_pos);
-    size_type args = select_support_trait<t_b, t_pat_len>::args_in_the_first_word(*data, word_off, carry);
+    size_type args = select_support_trait<t_b, t_pat_len>::args_in_the_first_word(detail::load_unaligned(data), word_off, carry);
     if (args >= i)
     {
         return (word_pos << 6)
-             + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_first_word(*data, i, word_off, carry);
+             + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_first_word(detail::load_unaligned(data), i, word_off, carry);
     }
     word_pos += 1;
     size_type sum_args = args;
-    carry = select_support_trait<t_b, t_pat_len>::get_carry(*data);
+    carry = select_support_trait<t_b, t_pat_len>::get_carry(detail::load_unaligned(data));
     uint64_t old_carry = carry;
-    args = select_support_trait<t_b, t_pat_len>::args_in_the_word(*(++data), carry);
+    args = select_support_trait<t_b, t_pat_len>::args_in_the_word(detail::load_unaligned(++data), carry);
     while (sum_args + args < i)
     {
         sum_args += args;
         assert(data + 1 < m_v->data() + (m_v->capacity() >> 6));
         old_carry = carry;
-        args = select_support_trait<t_b, t_pat_len>::args_in_the_word(*(++data), carry);
+        args = select_support_trait<t_b, t_pat_len>::args_in_the_word(detail::load_unaligned(++data), carry);
         word_pos += 1;
     }
     return (word_pos << 6)
-         + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(*data, i - sum_args, old_carry);
+         + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(detail::load_unaligned(data), i - sum_args, old_carry);
 }
 
 } // namespace sdsl

@@ -235,7 +235,7 @@ struct select_support_trait<10, 2>
     }
     static uint64_t init_carry(uint64_t const * data, size_type word_pos)
     {
-        return word_pos ? (*(data - 1) >> 63) : 0;
+        return word_pos ? (detail::load_unaligned(data - 1) >> 63) : 0;
     }
     static uint64_t get_carry(uint64_t w)
     {
@@ -276,7 +276,7 @@ struct select_support_trait<01, 2>
     }
     static uint64_t init_carry(uint64_t const * data, size_type word_pos)
     {
-        return word_pos ? (*(data - 1) >> 63) : 1;
+        return word_pos ? (detail::load_unaligned(data - 1) >> 63) : 1;
     }
     static uint64_t get_carry(uint64_t w)
     {
@@ -298,11 +298,11 @@ struct select_support_trait<00, 2>
         size_type result = 0;
         for (auto end = v.data() + (v.size() >> 6); data < end; ++data)
         {
-            result += rank_support_trait<00, 2>::args_in_the_word(*data, carry);
+            result += rank_support_trait<00, 2>::args_in_the_word(detail::load_unaligned(data), carry);
         }
         if (v.bit_size() & 0x3F)
         { // if bit_size is not a multiple of 64, add count of the last word
-            result += rank_support_trait<00, 2>::args_in_the_word((*data) | bits::lo_unset[v.bit_size() & 0x3F], carry);
+            result += rank_support_trait<00, 2>::args_in_the_word((detail::load_unaligned(data)) | bits::lo_unset[v.bit_size() & 0x3F], carry);
         }
         return result;
     }
@@ -337,7 +337,7 @@ struct select_support_trait<00, 2>
     }
     static uint64_t init_carry(uint64_t const * data, size_type word_pos)
     {
-        return word_pos ? (*(data - 1) >> 63) : 1;
+        return word_pos ? (detail::load_unaligned(data - 1) >> 63) : 1;
     }
     static uint64_t get_carry(uint64_t w)
     {
@@ -359,11 +359,11 @@ struct select_support_trait<11, 2>
         size_type result = 0;
         for (auto end = v.data() + (v.size() >> 6); data < end; ++data)
         {
-            result += rank_support_trait<11, 2>::args_in_the_word(*data, carry);
+            result += rank_support_trait<11, 2>::args_in_the_word(detail::load_unaligned(data), carry);
         }
         if (v.bit_size() & 0x3F)
         { // if bit_size is not a multiple of 64, add count of the last word
-            result += rank_support_trait<11, 2>::args_in_the_word((*data) & bits::lo_set[v.bit_size() & 0x3F], carry);
+            result += rank_support_trait<11, 2>::args_in_the_word((detail::load_unaligned(data)) & bits::lo_set[v.bit_size() & 0x3F], carry);
         }
         return result;
     }
@@ -400,7 +400,7 @@ struct select_support_trait<11, 2>
     }
     static uint64_t init_carry(uint64_t const * data, size_type word_pos)
     {
-        return word_pos ? (*(data - 1) >> 63) : 0;
+        return word_pos ? (detail::load_unaligned(data - 1) >> 63) : 0;
     }
     static uint64_t get_carry(uint64_t w)
     {

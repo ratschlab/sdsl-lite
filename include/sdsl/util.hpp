@@ -672,14 +672,14 @@ typename t_int_vec::size_type util::cnt_one_bits(t_int_vec const & v)
     uint64_t const * data = v.data();
     if (v.empty())
         return 0;
-    typename t_int_vec::size_type result = bits::cnt(*data);
+    typename t_int_vec::size_type result = bits::cnt(detail::load_unaligned(data));
     for (typename t_int_vec::size_type i = 1; i < ((v.bit_size() + 63) >> 6); ++i)
     {
-        result += bits::cnt(*(++data));
+        result += bits::cnt(detail::load_unaligned(++data));
     }
     if (v.bit_size() & 0x3F)
     {
-        result -= bits::cnt((*data) & (~bits::lo_set[v.bit_size() & 0x3F]));
+        result -= bits::cnt((detail::load_unaligned(data)) & (~bits::lo_set[v.bit_size() & 0x3F]));
     }
     return result;
 }

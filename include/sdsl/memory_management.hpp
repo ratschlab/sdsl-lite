@@ -901,7 +901,7 @@ public:
             uint64_t * data = alloc_mem(bytes);
             if (!data)
                 throw std::bad_alloc();
-            std::memcpy(data, v.m_data, ((std::min(v.m_size, capacity) + 63) >> 6) << 3);
+            std::memcpy(data, reinterpret_cast<const char *>(v.m_data), ((std::min(v.m_size, capacity) + 63) >> 6) << 3);
             v.m_mmap_context.reset();
             v.m_data = data;
             v.m_capacity = ((capacity + 63) >> 6) << 6;

@@ -404,13 +404,13 @@ void select_support_mcl<t_b, t_pat_len>::init_fast(bit_vector const * v)
     size_type last_k64 = 1, sb_cnt = 0;
     for (size_type i = 0, cnt_old = 0, cnt_new = 0, last_k64_sum = 1; i < v->bit_capacity(); i += 64, ++data)
     {
-        cnt_new += select_support_trait<t_b, t_pat_len>::args_in_the_word(*data, carry_new);
+        cnt_new += select_support_trait<t_b, t_pat_len>::args_in_the_word(detail::load_unaligned(data), carry_new);
         cnt_new = std::min(cnt_new, m_arg_cnt);
         if (cnt_new >= last_k64_sum)
         {
             arg_position[(last_k64 - 1) / 64] =
                 i
-                + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(*data,
+                + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(detail::load_unaligned(data),
                                                                                 last_k64_sum - cnt_old,
                                                                                 carry_new);
             last_k64 += 64;
@@ -508,28 +508,28 @@ inline auto select_support_mcl<t_b, t_pat_len>::select(size_type i) const -> siz
             size_type word_off = pos & 0x3F;
             uint64_t const * data = m_v->data() + word_pos;
             uint64_t carry = select_support_trait<t_b, t_pat_len>::init_carry(data, word_pos);
-            size_type args = select_support_trait<t_b, t_pat_len>::args_in_the_first_word(*data, word_off, carry);
+            size_type args = select_support_trait<t_b, t_pat_len>::args_in_the_first_word(detail::load_unaligned(data), word_off, carry);
 
             if (args >= i)
             {
                 return (word_pos << 6)
-                     + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_first_word(*data, i, word_off, carry);
+                     + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_first_word(detail::load_unaligned(data), i, word_off, carry);
             }
             word_pos += 1;
             size_type sum_args = args;
-            carry = select_support_trait<t_b, t_pat_len>::get_carry(*data);
+            carry = select_support_trait<t_b, t_pat_len>::get_carry(detail::load_unaligned(data));
             uint64_t old_carry = carry;
-            args = select_support_trait<t_b, t_pat_len>::args_in_the_word(*(++data), carry);
+            args = select_support_trait<t_b, t_pat_len>::args_in_the_word(detail::load_unaligned(++data), carry);
             while (sum_args + args < i)
             {
                 sum_args += args;
                 assert(data + 1 < m_v->data() + (m_v->bit_capacity() >> 6));
                 old_carry = carry;
-                args = select_support_trait<t_b, t_pat_len>::args_in_the_word(*(++data), carry);
+                args = select_support_trait<t_b, t_pat_len>::args_in_the_word(detail::load_unaligned(++data), carry);
                 word_pos += 1;
             }
             return (word_pos << 6)
-                 + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(*data, i - sum_args, old_carry);
+                 + select_support_trait<t_b, t_pat_len>::ith_arg_pos_in_the_word(detail::load_unaligned(data), i - sum_args, old_carry);
         }
     }
 }
@@ -605,7 +605,7 @@ auto select_support_mcl<t_b, t_pat_len>::serialize(std::ostream & out, structure
                 assert(m_mmap_context);
                 assert(i < m_block_offset.size());
                 size_type const header_offset = m_block_offset[i] - 9;
-                uint64_t const size_bits = *reinterpret_cast<uint64_t *>(m_mmap_context->data() + header_offset);
+                uint64_t const size_bits = detail::load_unaligned(reinterpret_cast<uint64_t const *>(m_mmap_context->data() + header_offset));
                 size_type const bytes = 9 + (((size_bits + 63) >> 6) << 3);
                 out.write(reinterpret_cast<char const *>(m_mmap_context->data() + header_offset), bytes);
                 if (is_long)
@@ -667,7 +667,7 @@ void select_support_mcl<t_b, t_pat_len>::load(std::istream & in, bit_vector cons
                 m_block_width[i] = m_mmap_context->data()[offset + 8];
                 if (m_block_width[i] == 0 or m_block_width[i] > 64)
                     throw std::runtime_error("select_support_mcl: invalid block width in mmap'd file");
-                if (*reinterpret_cast<uint64_t *>(m_mmap_context->data() + offset)
+                if (detail::load_unaligned(reinterpret_cast<uint64_t const *>(m_mmap_context->data() + offset))
                     != miniblock_size(i) * static_cast<uint64_t>(m_block_width[i]))
                     throw std::runtime_error("select_support_mcl: block size mismatch in mmap'd file");
                 m_block_offset[i] = offset + 9;

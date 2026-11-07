@@ -3,11 +3,15 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <sdsl/int_vector.hpp>
 #include <sdsl/int_vector_buffer.hpp>
 #include <sdsl/int_vector_mapper.hpp>
 #include <sdsl/sd_vector.hpp>
+#include <sdsl/rank_support_v5.hpp>
+#include <sdsl/select_support_mcl.hpp>
+#include <sdsl/select_support_scan.hpp>
 
 #include <gtest/gtest.h>
 
@@ -130,6 +134,225 @@ TEST_F(lab_storage_test, sparse_vector_stream_load)
     ASSERT_EQ(expected.size(), got.size());
     for (size_t i = 0; i < got.size(); ++i)
         EXPECT_EQ(expected[i], got[i]);
+}
+
+
+// Embedded vectors need not start at a machine-word boundary.
+TEST_F(lab_storage_test, mapped_rank_select_at_every_byte_offset)
+{
+    for (size_t offset = 0; offset < 8; ++offset)
+        for (size_t size : {0, 1, 63, 64, 65, 512, 2048, 32704})
+        {
+            SCOPED_TRACE(::testing::Message() << offset << ":" << size);
+            sdsl::bit_vector bits(size, 0);
+            for (size_t i = 0; i < size; ++i)
+                bits[i] = (i % 3 == 0);
+            sdsl::rank_support_v5<> rank(&bits);
+            sdsl::select_support_mcl<> ones(&bits);
+            sdsl::select_support_scan<0> zeros(&bits);
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << std::string(offset, 'x');
+                bits.serialize(out);
+                rank.serialize(out);
+                ones.serialize(out);
+                zeros.serialize(out);
+            }
+            sdsl::bit_vector mapped;
+            sdsl::rank_support_v5<> loaded_rank;
+            sdsl::select_support_mcl<> loaded_ones;
+            sdsl::select_support_scan<0> loaded_zeros;
+            {
+                sdsl::mmap_ifstream in(file);
+                in.seekg(offset);
+                mapped.load(in);
+                loaded_rank.load(in, &mapped);
+                loaded_ones.load(in, &mapped);
+                loaded_zeros.load(in, &mapped);
+            }
+            ASSERT_TRUE(mapped.is_mapped());
+            auto const & view = mapped;
+            size_t count = 0, zero_count = 0;
+            for (size_t i = 0; i < size; ++i)
+            {
+                EXPECT_EQ(bits[i], view[i]);
+                EXPECT_EQ(count, loaded_rank(i));
+                if (bits[i])
+                    EXPECT_EQ(i, loaded_ones(++count));
+                else
+                    EXPECT_EQ(i, loaded_zeros(++zero_count));
+            }
+            EXPECT_EQ(count, loaded_rank(size));
+            EXPECT_EQ(count, sdsl::util::cnt_one_bits(view));
+            sdsl::bit_vector copy(view);
+            EXPECT_FALSE(copy.is_mapped());
+            EXPECT_EQ(bits, copy);
+            if (size)
+            {
+                copy[0] = !copy[0];
+                EXPECT_EQ(bits[0], view[0]);
+            }
+            sdsl::bit_vector combined(size, 0);
+            combined |= view;
+            EXPECT_EQ(bits, combined);
+        }
+}
+
+
+template <uint8_t pattern>
+void check_mapped_pattern(const std::string & file)
+{
+    for (size_t offset = 0; offset < 8; ++offset)
+        for (size_t size : {1, 63, 64, 65, 512})
+        {
+            sdsl::bit_vector bits(size, 0);
+            for (size_t i = 0; i < size; ++i)
+                bits[i] = (i % 5 < 2);
+            sdsl::rank_support_v5<pattern, 2> rank(&bits);
+            sdsl::select_support_mcl<pattern, 2> select(&bits);
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << std::string(offset, 'x');
+                bits.serialize(out);
+                rank.serialize(out);
+                select.serialize(out);
+            }
+            sdsl::bit_vector mapped;
+            sdsl::rank_support_v5<pattern, 2> loaded_rank;
+            sdsl::select_support_mcl<pattern, 2> loaded_select;
+            {
+                sdsl::mmap_ifstream in(file);
+                in.seekg(offset);
+                mapped.load(in);
+                loaded_rank.load(in, &mapped);
+                loaded_select.load(in, &mapped);
+            }
+            for (size_t i = 0; i <= size; ++i)
+                EXPECT_EQ(rank(i), loaded_rank(i));
+            for (size_t i = 1; i <= rank(size); ++i)
+                EXPECT_EQ(select(i), loaded_select(i));
+        }
+}
+
+TEST_F(lab_storage_test, mapped_two_bit_patterns)
+{
+    check_mapped_pattern<00>(file);
+    check_mapped_pattern<01>(file);
+    check_mapped_pattern<10>(file);
+    check_mapped_pattern<11>(file);
+}
+
+TEST_F(lab_storage_test, rank_at_unpadded_mapped_endpoint)
+{
+    for (size_t size : {0, 64, 32704})
+    {
+        sdsl::bit_vector bits(size, 1);
+        sdsl::rank_support_v5<> rank(&bits);
+        ASSERT_TRUE(sdsl::store_to_file(bits, file));
+        sdsl::bit_vector mapped;
+        {
+            sdsl::mmap_ifstream in(file);
+            mapped.load(in);
+        }
+        rank.set_vector(&mapped);
+        EXPECT_EQ(size, rank(size));
+        EXPECT_EQ(0u, mapped.get_int(size, 0));
+    }
+}
+
+
+TEST_F(lab_storage_test, mapped_dynamic_indexing_at_every_width_and_byte_offset)
+{
+    for (uint8_t width = 1; width <= 64; ++width)
+        for (size_t offset = 0; offset < 8; ++offset)
+        {
+            SCOPED_TRACE(::testing::Message() << unsigned(width) << ":" << offset);
+            sdsl::int_vector<> original(65, 0, width);
+            for (size_t i = 0; i < original.size(); ++i)
+                original[i] = (i * 0x9e3779b97f4a7c15ULL + 1) & sdsl::bits::lo_set[width];
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << std::string(offset, 'x');
+                original.serialize(out);
+            }
+            sdsl::int_vector<> mapped;
+            {
+                sdsl::mmap_ifstream in(file);
+                in.seekg(offset);
+                mapped.load(in);
+            }
+            auto const & view = mapped;
+            ASSERT_EQ(width, view.width());
+            for (size_t i = 0; i < original.size(); ++i)
+                EXPECT_EQ(original[i], view[i]);
+            EXPECT_EQ(0u, view.get_int(0, 0));
+            EXPECT_EQ(0u, view.get_int(view.bit_size(), 0));
+#ifdef SDSL_DEBUG
+            EXPECT_THROW(view.get_int(view.bit_size() + 1, 0), std::out_of_range);
+            EXPECT_THROW(view.get_int(view.bit_size(), 1), std::out_of_range);
+#endif
+        }
+    sdsl::int_vector<> const normalized(1, 42, 0);
+    EXPECT_EQ(64u, normalized.width());
+    EXPECT_EQ(42u, normalized[0]);
+}
+
+
+TEST_F(lab_storage_test, mapped_sparse_lookup_bucket_and_word_boundaries)
+{
+    for (uint64_t size : {uint64_t{1}, uint64_t{65}, uint64_t{4097}, (uint64_t{1} << 40) + 65})
+        for (size_t offset = 0; offset < 8; ++offset)
+            for (unsigned pattern = 0; pattern < 3; ++pattern)
+            {
+                SCOPED_TRACE(::testing::Message() << size << ":" << offset << ":" << pattern);
+                std::vector<uint64_t> positions;
+                if (pattern == 1)
+                    positions = {size - 1};
+                else if (pattern == 2)
+                {
+                    for (uint64_t value : {uint64_t{0}, uint64_t{1}, uint64_t{4}, uint64_t{5},
+                                           uint64_t{6}, uint64_t{63}, uint64_t{64}, uint64_t{65},
+                                           size / 2, size - 1})
+                        if (value < size)
+                            positions.push_back(value);
+                    std::sort(positions.begin(), positions.end());
+                    positions.erase(std::unique(positions.begin(), positions.end()), positions.end());
+                }
+                sdsl::sd_vector_builder builder(size, positions.size());
+                for (auto value : positions)
+                    builder.set(value);
+                sdsl::sd_vector<> original(builder);
+                {
+                    std::ofstream out(file, std::ios::binary);
+                    out << std::string(offset, 'x');
+                    original.serialize(out);
+                }
+                sdsl::sd_vector<> mapped;
+                {
+                    sdsl::mmap_ifstream in(file);
+                    in.seekg(offset);
+                    mapped.load(in);
+                }
+                std::vector<uint64_t> queries;
+                for (uint64_t i = 0; i < std::min(size, uint64_t{4097}); ++i)
+                    queries.push_back(i);
+                for (auto value : positions)
+                    for (uint64_t distance = 0; distance < 65 && distance <= value; ++distance)
+                        queries.push_back(value - distance);
+                queries.push_back(size - 1);
+                for (auto query : queries)
+                {
+                    bool const expected = std::binary_search(positions.begin(), positions.end(), query);
+                    EXPECT_EQ(expected, original[query]);
+                    EXPECT_EQ(expected, mapped[query]);
+                    auto const length = static_cast<uint8_t>(std::min(uint64_t{64}, size - query));
+                    uint64_t word = 0;
+                    for (auto value : positions)
+                        if (value >= query && value - query < length)
+                            word |= uint64_t{1} << (value - query);
+                    EXPECT_EQ(word, mapped.get_int(query, length));
+                }
+            }
 }
 
 } // namespace

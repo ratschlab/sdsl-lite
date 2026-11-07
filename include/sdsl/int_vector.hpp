@@ -683,6 +683,8 @@ public:
     //! Load the int_vector for a stream.
     void load(std::istream & in);
 
+    bool is_mapped() const noexcept { return static_cast<bool>(m_mmap_context); }
+
     //! Load a view of a legacy-format vector while retaining its mapped file.
     // Lab v2 mmap compatibility (GPL-3.0-or-later; see COPYING.v2).
     size_t load(std::shared_ptr<mmap_context> const & context, size_t offset)
@@ -794,11 +796,11 @@ public:
         uint64_t const * data2 = data();
         for (size_type i = 0; i < bit_data_size() - 1; ++i)
         {
-            if (*(data1++) != *(data2++))
+            if (detail::load_unaligned(data1++) != detail::load_unaligned(data2++))
                 return false;
         }
         uint8_t l = 64 - ((bit_data_size() << 6) - m_size);
-        return ((*data1) & bits::lo_set[l]) == ((*data2) & bits::lo_set[l]);
+        return (detail::load_unaligned(data1) & bits::lo_set[l]) == (detail::load_unaligned(data2) & bits::lo_set[l]);
     }
 
     //! Equality operator for two int_vectors.
@@ -1427,9 +1429,9 @@ public:
     {
         if (m_offset + m_len <= 64)
         {
-            return ((*m_word) >> m_offset) & bits::lo_set[m_len];
+            return ((detail::load_unaligned(m_word)) >> m_offset) & bits::lo_set[m_len];
         }
-        return ((*m_word) >> m_offset) | ((*(m_word + 1) & bits::lo_set[(m_offset + m_len) & 0x3F]) << (64 - m_offset));
+        return ((detail::load_unaligned(m_word)) >> m_offset) | ((detail::load_unaligned(m_word + 1) & bits::lo_set[(m_offset + m_len) & 0x3F]) << (64 - m_offset));
     }
 
     //! Prefix increment of the Iterator
@@ -1588,7 +1590,7 @@ inline int_vector<t_width>::int_vector(size_type size, value_type default_value,
     m_width(t_width)
 {
     width(int_width);
-    assign(size, default_value);
+    if (size) assign(size, default_value);
 }
 
 template <uint8_t t_width>
@@ -1612,10 +1614,10 @@ inline int_vector<t_width>::int_vector(int_vector const & v) :
     m_width(v.m_width)
 {
     width(v.m_width);
-    resize(v.size());
+    bit_resize(v.bit_size());
     if (v.m_size > 0)
     {
-        if (memcpy(m_data, v.data(), bit_data_size() << 3) == nullptr)
+        if (memcpy(m_data, reinterpret_cast<const char *>(v.data()), bit_data_size() << 3) == nullptr)
         {
             throw std::bad_alloc(); // LCOV_EXCL_LINE
         }
@@ -1697,7 +1699,7 @@ auto int_vector<t_width>::get_int(size_type idx, uint8_t const len) const -> val
         throw std::out_of_range("OUT_OF_RANGE_ERROR: int_vector::get_int(size_type, uint8_t); len>64!");
     }
 #endif
-    return bits::read_int(m_data + (idx >> 6), idx & 0x3F, len);
+    return len ? bits::read_int(m_data + (idx >> 6), idx & 0x3F, len) : 0;
 }
 
 template <uint8_t t_width>
@@ -1870,21 +1872,21 @@ template <>
 inline auto int_vector<64>::operator[](size_type const & idx) const noexcept -> const_reference
 {
     assert(idx < this->size());
-    return *(this->m_data + idx);
+    return detail::load_unaligned(this->m_data + idx);
 }
 
 template <>
 inline auto int_vector<32>::operator[](size_type const & idx) const noexcept -> const_reference
 {
     assert(idx < this->size());
-    return *(((uint32_t *)this->m_data) + idx);
+    return detail::load_unaligned(reinterpret_cast<const uint32_t *>(this->m_data) + idx);
 }
 
 template <>
 inline auto int_vector<16>::operator[](size_type const & idx) const noexcept -> const_reference
 {
     assert(idx < this->size());
-    return *(((uint16_t *)this->m_data) + idx);
+    return detail::load_unaligned(reinterpret_cast<const uint16_t *>(this->m_data) + idx);
 }
 
 template <>
@@ -1898,7 +1900,7 @@ template <>
 inline auto int_vector<1>::operator[](size_type const & idx) const noexcept -> const_reference
 {
     assert(idx < this->size());
-    return ((*(m_data + (idx >> 6))) >> (idx & 0x3F)) & 1;
+    return ((detail::load_unaligned(m_data + (idx >> 6))) >> (idx & 0x3F)) & 1;
 }
 
 template <uint8_t t_width>
@@ -1950,7 +1952,7 @@ int_vector<t_width> & int_vector<t_width>::operator&=(int_vector const & v)
 {
     assert(v.bit_size() == bit_size());
     for (uint64_t i = 0; i < bit_data_size(); ++i)
-        m_data[i] &= v.m_data[i];
+        m_data[i] &= detail::load_unaligned(v.m_data + i);
     return *this;
 }
 
@@ -1959,7 +1961,7 @@ int_vector<t_width> & int_vector<t_width>::operator|=(int_vector const & v)
 {
     assert(bit_size() == v.bit_size());
     for (uint64_t i = 0; i < bit_data_size(); ++i)
-        m_data[i] |= v.m_data[i];
+        m_data[i] |= detail::load_unaligned(v.m_data + i);
     return *this;
 }
 
@@ -1968,7 +1970,7 @@ int_vector<t_width> & int_vector<t_width>::operator^=(int_vector const & v)
 {
     assert(bit_size() == v.bit_size());
     for (uint64_t i = 0; i < bit_data_size(); ++i)
-        m_data[i] ^= v.m_data[i];
+        m_data[i] ^= detail::load_unaligned(v.m_data + i);
     return *this;
 }
 

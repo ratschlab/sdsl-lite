@@ -86,7 +86,7 @@ public:
         m_basic_block[0] = m_basic_block[1] = 0;
 
         uint64_t carry = trait_type::init_carry();
-        uint64_t sum = trait_type::args_in_the_word(*data, carry);
+        uint64_t sum = trait_type::args_in_the_word(detail::load_unaligned(data), carry);
         uint64_t second_level_cnt = 0;
         uint64_t cnt_words = 1;
         for (i = 1; i < ((m_v->bit_size() + 63) >> 6); ++i, ++cnt_words)
@@ -103,7 +103,7 @@ public:
                 // pack the prefix sum for each 6x64bit block into the second_level_cnt
                 second_level_cnt |= sum << (60 - 12 * (cnt_words / 6)); //  48, 36, 24, 12, 0
             }
-            sum += trait_type::args_in_the_word(*(++data), carry);
+            sum += trait_type::args_in_the_word(detail::load_unaligned(++data), carry);
         }
 
         if ((cnt_words % 6) == 0)
@@ -134,8 +134,8 @@ public:
         assert(idx <= m_v->size());
         uint64_t const * p = m_basic_block.data() + ((idx >> 10) & 0xFFFFFFFFFFFFFFFEULL); // (idx/2048)*2
         //                     ( prefix sum of the 6x64bit blocks | (idx%2048)/(64*6) )
-        size_type result = *p + ((*(p + 1) >> (60 - 12 * ((idx & 0x7FF) / (64 * 6)))) & 0x7FFULL)
-                         + trait_type::word_rank(m_v->data(), idx);
+        size_type result = detail::load_unaligned(p) + ((detail::load_unaligned(p + 1) >> (60 - 12 * ((idx & 0x7FF) / (64 * 6)))) & 0x7FFULL)
+                         + ((idx & 0x3F) ? trait_type::word_rank(m_v->data(), idx) : 0);
         idx -= (idx & 0x3F);
         uint8_t to_do = ((idx >> 6) & 0x1FULL) % 6;
         --idx;
