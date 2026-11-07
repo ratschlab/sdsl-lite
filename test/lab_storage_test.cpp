@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -69,6 +71,48 @@ TEST_F(lab_storage_test, mapped_ownership_and_resize)
     std::ifstream in(file);
     disk.load(in);
     EXPECT_EQ(original, disk);
+}
+
+TEST_F(lab_storage_test, legacy_views_release_os_descriptors)
+{
+    sdsl::int_vector<> const expected(65, 7, 13);
+    ASSERT_TRUE(sdsl::store_to_file(expected, file));
+    int const before = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(before, 0);
+    ::close(before);
+    std::vector<sdsl::int_vector<>> views(64);
+    for (auto & view : views)
+    {
+        sdsl::mmap_ifstream in(file);
+        view.load(in);
+    }
+    for (auto const & view : views)
+        EXPECT_EQ(expected, view);
+    int const reused = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(reused, 0);
+    EXPECT_EQ(before, reused);
+    views.clear();
+    EXPECT_EQ(0, ::close(reused));
+}
+
+TEST_F(lab_storage_test, legacy_ram_mapping_lifetime)
+{
+    auto const ram_file = sdsl::ram_file_name(file);
+    ASSERT_TRUE(sdsl::store_to_file(sdsl::int_vector<>(65, 7, 13), ram_file));
+    auto const expected = sdsl::ram_fs::content(ram_file);
+    int const before = sdsl::ram_fs::open(ram_file);
+    sdsl::ram_fs::close(before);
+    {
+        auto owner = std::make_shared<sdsl::mmap_context>(ram_file);
+        auto alias = owner;
+        owner.reset();
+        ASSERT_EQ(expected.size(), alias->file_size_bytes());
+        EXPECT_EQ(0, std::memcmp(expected.data(), alias->data(), expected.size()));
+    }
+    int const after = sdsl::ram_fs::open(ram_file);
+    EXPECT_EQ(before, after);
+    sdsl::ram_fs::close(after);
+    sdsl::remove(ram_file);
 }
 
 TEST_F(lab_storage_test, mapper_at_file_offset)
