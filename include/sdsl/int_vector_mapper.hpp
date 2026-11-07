@@ -131,14 +131,14 @@ private:
                 std::cerr << "int_vector_mapper: error closing file mapping'" << m_file_name << "': " << ret
                           << std::endl;
             }
-            if (m_delete_on_close)
+        }
+        if (m_delete_on_close && (m_fd != -1 || m_mapped_data))
+        {
+            int ret_code = sdsl::remove(m_file_name);
+            if (ret_code != 0)
             {
-                int ret_code = sdsl::remove(m_file_name);
-                if (ret_code != 0)
-                {
-                    std::cerr << "int_vector_mapper: error deleting file '" << m_file_name << "': " << ret_code
-                              << std::endl;
-                }
+                std::cerr << "int_vector_mapper: error deleting file '" << m_file_name << "': " << ret_code
+                          << std::endl;
             }
         }
         m_mapped_data = nullptr;
@@ -234,6 +234,15 @@ public:
             memory_manager::close_file_for_mmap(m_fd);
             m_fd = -1;
             throw std::runtime_error(mmap_error);
+        }
+
+        // OS mappings remain valid after closing the file. Writable and RAM
+        // mappings retain their descriptor for resizing and backend dispatch.
+        if (!(t_mode & std::ios_base::out) && !is_ram_file(m_fd))
+        {
+            if (memory_manager::close_file_for_mmap(m_fd) != 0)
+                std::cerr << "int_vector_mapper: error closing mapped file '" << m_file_name << "'" << std::endl;
+            m_fd = -1;
         }
 
         m_wrapper.m_size = size_in_bits;

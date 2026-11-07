@@ -1113,6 +1113,14 @@ public:
             m_fd = -1;
             throw std::runtime_error("mmap_context: mmap error. " + std::string(util::str_from_errno()));
         }
+        // The mapping owns the OS pages; only RAM mappings need the descriptor
+        // to identify their backend when they are released.
+        if (!is_ram_file(m_fd))
+        {
+            if (memory_manager::close_file_for_mmap(m_fd) != 0)
+                std::cerr << "mmap_context: error closing mapped file '" << m_file_name << "'" << std::endl;
+            m_fd = -1;
+        }
     }
 
     // Compatibility bridge for bounded legacy loaders. The owner supplies storage;
