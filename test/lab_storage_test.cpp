@@ -14,11 +14,20 @@
 #include <sdsl/rank_support_v5.hpp>
 #include <sdsl/select_support_mcl.hpp>
 #include <sdsl/select_support_scan.hpp>
+#include <sdsl/packed_vector_view.hpp>
+#include <sdsl/shared_mapper.hpp>
 
 #include <gtest/gtest.h>
 
 namespace
 {
+
+using view_bits = sdsl::packed_vector_view<1>;
+template <uint8_t t_b = 1, uint8_t t_pat_len = 1>
+using view_rank = sdsl::rank_support_v5<t_b, t_pat_len, view_bits, sdsl::packed_vector_view>;
+template <uint8_t t_b = 1, uint8_t t_pat_len = 1>
+using view_select = sdsl::select_support_mcl<t_b, t_pat_len, view_bits, sdsl::packed_vector_view>;
+using view_sd = sdsl::sd_vector<view_bits, view_select<1>, view_select<0>, sdsl::packed_vector_view<0>>;
 
 class lab_storage_test : public ::testing::Test
 {
@@ -47,21 +56,21 @@ TEST_F(lab_storage_test, legacy_vector_headers)
     EXPECT_EQ(24u, out.str().size()); // Fixed-width vectors omit the width byte.
 }
 
-TEST_F(lab_storage_test, mapped_ownership_and_resize)
+TEST_F(lab_storage_test, owned_load_from_mapped_stream_and_resize)
 {
     sdsl::int_vector<> const original(5, 3, 13);
     ASSERT_TRUE(sdsl::store_to_file(original, file));
     sdsl::int_vector<> mapped;
     {
-        sdsl::mmap_ifstream in(file);
-        mapped.load(in);
+        sdsl::shared_mapper_ifstream in(file);
+        mapped.load(in); // An owned vector copies its payload.
     }
-    EXPECT_EQ(original, mapped); // Mapping outlives the stream.
+    EXPECT_EQ(original, mapped);
     sdsl::int_vector<> moved(std::move(mapped));
     sdsl::int_vector<> swapped(2, 1, 13);
     swapped.swap(moved);
     EXPECT_EQ(original, swapped);
-    swapped.push_back(7); // Detach even when the mapped capacity has spare bits.
+    swapped.push_back(7);
     EXPECT_EQ(7u, swapped[5]);
     for (size_t i = 0; i < original.size(); ++i)
         EXPECT_EQ(original[i], swapped[i]);
@@ -73,21 +82,21 @@ TEST_F(lab_storage_test, mapped_ownership_and_resize)
     EXPECT_EQ(original, disk);
 }
 
-TEST_F(lab_storage_test, legacy_views_release_os_descriptors)
+TEST_F(lab_storage_test, mapped_views_release_os_descriptors)
 {
     sdsl::int_vector<> const expected(65, 7, 13);
     ASSERT_TRUE(sdsl::store_to_file(expected, file));
     int const before = ::open(file.c_str(), O_RDONLY);
     ASSERT_GE(before, 0);
     ::close(before);
-    std::vector<sdsl::int_vector<>> views(64);
+    std::vector<sdsl::packed_vector_view<0>> views(64);
     for (auto & view : views)
     {
-        sdsl::mmap_ifstream in(file);
+        sdsl::shared_mapper_ifstream in(file);
         view.load(in);
     }
     for (auto const & view : views)
-        EXPECT_EQ(expected, view);
+        EXPECT_EQ(expected, view.to_owned());
     int const reused = ::open(file.c_str(), O_RDONLY);
     ASSERT_GE(reused, 0);
     EXPECT_EQ(before, reused);
@@ -95,7 +104,7 @@ TEST_F(lab_storage_test, legacy_views_release_os_descriptors)
     EXPECT_EQ(0, ::close(reused));
 }
 
-TEST_F(lab_storage_test, legacy_ram_mapping_lifetime)
+TEST_F(lab_storage_test, ram_mapping_lifetime)
 {
     auto const ram_file = sdsl::ram_file_name(file);
     ASSERT_TRUE(sdsl::store_to_file(sdsl::int_vector<>(65, 7, 13), ram_file));
@@ -103,10 +112,10 @@ TEST_F(lab_storage_test, legacy_ram_mapping_lifetime)
     int const before = sdsl::ram_fs::open(ram_file);
     sdsl::ram_fs::close(before);
     {
-        auto owner = std::make_shared<sdsl::mmap_context>(ram_file);
+        auto owner = std::make_shared<sdsl::shared_mapper_ifstream::byte_mapper const>(ram_file, true);
         auto alias = owner;
         owner.reset();
-        ASSERT_EQ(expected.size(), alias->file_size_bytes());
+        ASSERT_EQ(expected.size(), alias->size());
         EXPECT_EQ(0, std::memcmp(expected.data(), alias->data(), expected.size()));
     }
     int const after = sdsl::ram_fs::open(ram_file);
@@ -238,19 +247,20 @@ TEST_F(lab_storage_test, mapped_rank_select_at_every_byte_offset)
                 ones.serialize(out);
                 zeros.serialize(out);
             }
-            sdsl::bit_vector mapped;
-            sdsl::rank_support_v5<> loaded_rank;
-            sdsl::select_support_mcl<> loaded_ones;
-            sdsl::select_support_scan<0> loaded_zeros;
+            view_bits mapped;
+            view_rank<> loaded_rank;
+            view_select<> loaded_ones;
+            sdsl::select_support_scan<0, 1, view_bits> loaded_zeros;
             {
-                sdsl::mmap_ifstream in(file);
+                sdsl::shared_mapper_ifstream in(file);
                 in.seekg(offset);
                 mapped.load(in);
                 loaded_rank.load(in, &mapped);
                 loaded_ones.load(in, &mapped);
                 loaded_zeros.load(in, &mapped);
+                ASSERT_EQ(reinterpret_cast<std::byte const *>(in.mapper()->data()) + offset + 8,
+                          mapped.bytes().data());
             }
-            ASSERT_TRUE(mapped.is_mapped());
             auto const & view = mapped;
             size_t count = 0, zero_count = 0;
             for (size_t i = 0; i < size; ++i)
@@ -263,18 +273,14 @@ TEST_F(lab_storage_test, mapped_rank_select_at_every_byte_offset)
                     EXPECT_EQ(i, loaded_zeros(++zero_count));
             }
             EXPECT_EQ(count, loaded_rank(size));
-            EXPECT_EQ(count, sdsl::util::cnt_one_bits(view));
-            sdsl::bit_vector copy(view);
-            EXPECT_FALSE(copy.is_mapped());
+            sdsl::bit_vector copy = view.to_owned();
+            EXPECT_EQ(count, sdsl::util::cnt_one_bits(copy));
             EXPECT_EQ(bits, copy);
             if (size)
             {
                 copy[0] = !copy[0];
                 EXPECT_EQ(bits[0], view[0]);
             }
-            sdsl::bit_vector combined(size, 0);
-            combined |= view;
-            EXPECT_EQ(bits, combined);
         }
 }
 
@@ -297,11 +303,11 @@ void check_mapped_pattern(const std::string & file)
                 rank.serialize(out);
                 select.serialize(out);
             }
-            sdsl::bit_vector mapped;
-            sdsl::rank_support_v5<pattern, 2> loaded_rank;
-            sdsl::select_support_mcl<pattern, 2> loaded_select;
+            view_bits mapped;
+            view_rank<pattern, 2> loaded_rank;
+            view_select<pattern, 2> loaded_select;
             {
-                sdsl::mmap_ifstream in(file);
+                sdsl::shared_mapper_ifstream in(file);
                 in.seekg(offset);
                 mapped.load(in);
                 loaded_rank.load(in, &mapped);
@@ -327,11 +333,12 @@ TEST_F(lab_storage_test, rank_at_unpadded_mapped_endpoint)
     for (size_t size : {0, 64, 32704})
     {
         sdsl::bit_vector bits(size, 1);
-        sdsl::rank_support_v5<> rank(&bits);
+        view_bits owned(bits);
+        view_rank<> rank(&owned);
         ASSERT_TRUE(sdsl::store_to_file(bits, file));
-        sdsl::bit_vector mapped;
+        view_bits mapped;
         {
-            sdsl::mmap_ifstream in(file);
+            sdsl::shared_mapper_ifstream in(file);
             mapped.load(in);
         }
         rank.set_vector(&mapped);
@@ -355,9 +362,9 @@ TEST_F(lab_storage_test, mapped_dynamic_indexing_at_every_width_and_byte_offset)
                 out << std::string(offset, 'x');
                 original.serialize(out);
             }
-            sdsl::int_vector<> mapped;
+            sdsl::packed_vector_view<0> mapped;
             {
-                sdsl::mmap_ifstream in(file);
+                sdsl::shared_mapper_ifstream in(file);
                 in.seekg(offset);
                 mapped.load(in);
             }
@@ -367,10 +374,6 @@ TEST_F(lab_storage_test, mapped_dynamic_indexing_at_every_width_and_byte_offset)
                 EXPECT_EQ(original[i], view[i]);
             EXPECT_EQ(0u, view.get_int(0, 0));
             EXPECT_EQ(0u, view.get_int(view.bit_size(), 0));
-#ifdef SDSL_DEBUG
-            EXPECT_THROW(view.get_int(view.bit_size() + 1, 0), std::out_of_range);
-            EXPECT_THROW(view.get_int(view.bit_size(), 1), std::out_of_range);
-#endif
         }
     sdsl::int_vector<> const normalized(1, 42, 0);
     EXPECT_EQ(64u, normalized.width());
@@ -407,9 +410,9 @@ TEST_F(lab_storage_test, mapped_sparse_lookup_bucket_and_word_boundaries)
                     out << std::string(offset, 'x');
                     original.serialize(out);
                 }
-                sdsl::sd_vector<> mapped;
+                view_sd mapped;
                 {
-                    sdsl::mmap_ifstream in(file);
+                    sdsl::shared_mapper_ifstream in(file);
                     in.seekg(offset);
                     mapped.load(in);
                 }

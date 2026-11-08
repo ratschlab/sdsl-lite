@@ -9,6 +9,8 @@
 
 #include <sdsl/int_vector_mapper.hpp>
 #include <sdsl/packed_vector_view.hpp>
+#include <sdsl/shared_mapper.hpp>
+#include <sdsl/packed_vector_view.hpp>
 #include <sdsl/rank_support_v5.hpp>
 #include <sdsl/select_support_mcl.hpp>
 #include <sdsl/select_support_scan.hpp>
@@ -568,7 +570,7 @@ TEST_F(int_vector_mapper_test, packed_view_ownership_and_bounds)
     EXPECT_THROW(view_type::from_bytes(bytes, *bytes, UINT64_MAX), std::invalid_argument);
 }
 
-TEST_F(int_vector_mapper_test, packed_view_detaches_fork_mapped_vector)
+TEST_F(int_vector_mapper_test, mapped_packed_view_converts_to_owned_copy)
 {
     if (sdsl::is_ram_file(temp_dir))
         GTEST_SKIP() << "Read-only OS mapping requires a disk file";
@@ -577,14 +579,11 @@ TEST_F(int_vector_mapper_test, packed_view_detaches_fork_mapped_vector)
     sdsl::store_to_file(expected, file);
     sdsl::packed_vector_view<1> view;
     {
-        sdsl::mmap_ifstream in(file);
-        sdsl::bit_vector mapped;
-        mapped.load(in);
-        ASSERT_TRUE(mapped.is_mapped());
-        view = sdsl::packed_vector_view<1>(std::move(mapped));
+        sdsl::shared_mapper_ifstream in(file);
+        view.load(in);
+        ASSERT_EQ(reinterpret_cast<std::byte const *>(in.mapper()->data()) + 8, view.bytes().data());
     }
     auto owned = std::move(view).into_owned();
-    ASSERT_FALSE(owned.is_mapped());
     ASSERT_EQ(expected, owned);
     owned[64] = 0;
     owned.resize(129);

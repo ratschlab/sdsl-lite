@@ -4,6 +4,8 @@
 #include "sdsl/bit_vectors.hpp"
 #include "sdsl/io.hpp"
 #include "sdsl/memory_management.hpp"
+#include "sdsl/packed_vector_view.hpp"
+#include "sdsl/shared_mapper.hpp"
 #include "sdsl/select_support.hpp"
 
 #include "gtest/gtest.h"
@@ -29,7 +31,15 @@ protected:
 
 using testing::Types;
 
-typedef Types<select_support_mcl<>, select_support_mcl<0>, select_support_mcl<01, 2>, select_support_mcl<10, 2>>
+// Owned storage copies the miniblocks, view storage keeps them in the mapping.
+typedef Types<select_support_mcl<>,
+              select_support_mcl<0>,
+              select_support_mcl<01, 2>,
+              select_support_mcl<10, 2>,
+              select_support_mcl<1, 1, packed_vector_view<1>, packed_vector_view>,
+              select_support_mcl<0, 1, packed_vector_view<1>, packed_vector_view>,
+              select_support_mcl<01, 2, packed_vector_view<1>, packed_vector_view>,
+              select_support_mcl<10, 2, packed_vector_view<1>, packed_vector_view>>
     Implementations;
 
 TYPED_TEST_SUITE(select_support_mcl_mmap_test, Implementations);
@@ -99,11 +109,11 @@ TYPED_TEST(select_support_mcl_mmap_test, mmap_load_and_select)
         out.close();
     }
 
-    // Load via mmap_ifstream
+    // Load via shared_mapper_ifstream
     typename TypeParam::bit_vector_type bv_mmap;
     TypeParam ss_mmap;
     {
-        mmap_ifstream in(file, ios::binary | ios::in);
+        shared_mapper_ifstream in(file, ios::binary | ios::in);
         ASSERT_TRUE(in.good());
         bv_mmap.load(in);
         ss_mmap.load(in, &bv_mmap);
@@ -145,7 +155,7 @@ TYPED_TEST(select_support_mcl_mmap_test, mmap_serialize_roundtrip)
     typename TypeParam::bit_vector_type bv_mmap;
     TypeParam ss_mmap;
     {
-        mmap_ifstream in(file1, ios::binary | ios::in);
+        shared_mapper_ifstream in(file1, ios::binary | ios::in);
         ASSERT_TRUE(in.good());
         bv_mmap.load(in);
         ss_mmap.load(in, &bv_mmap);
@@ -195,7 +205,7 @@ TYPED_TEST(select_support_mcl_mmap_test, mmap_load_empty)
     typename TypeParam::bit_vector_type bv_mmap;
     TypeParam ss_mmap;
     {
-        mmap_ifstream in(file, ios::binary | ios::in);
+        shared_mapper_ifstream in(file, ios::binary | ios::in);
         ASSERT_TRUE(in.good());
         bv_mmap.load(in);
         ss_mmap.load(in, &bv_mmap);

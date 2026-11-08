@@ -63,8 +63,6 @@ public:
     }
     explicit packed_vector_view(vector_type value)
     {
-        if (value.is_mapped())
-            value = vector_type(value);
         auto p = std::make_shared<vector_type>(std::move(value));
         owned_ = p.get();
         bytes_ = reinterpret_cast<std::byte const *>(p->data());

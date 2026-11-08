@@ -189,8 +189,6 @@ public:
                                // https://github.com/facebook/folly/blob/master/folly/docs/FBVector.md#memory-handling
 
 private:
-    std::shared_ptr<mmap_context> m_mmap_context;
-
     // Hidden, since number of bits (size) does not go well together with int value.
     void bit_resize(size_type const size, value_type const value);
 
@@ -200,7 +198,7 @@ private:
         if constexpr (t_width != 0)
         {
             size_type const bit_size{size * t_width};
-            if (m_mmap_context || bit_size > m_capacity || m_data == nullptr)
+            if (bit_size > m_capacity || m_data == nullptr)
             {
                 // start with 64 bit if vector has no capacity
                 size_type new_capacity = std::max<size_type>(m_capacity, 64u);
@@ -214,7 +212,7 @@ private:
         else
         {
             size_type const bit_size{size * m_width};
-            if (m_mmap_context || bit_size > m_capacity || m_data == nullptr)
+            if (bit_size > m_capacity || m_data == nullptr)
             {
                 // start with 64 bit if vector has no capacity
                 size_type new_capacity = std::max<size_type>(m_capacity, 64u);
@@ -612,32 +610,6 @@ public:
 
     //! Load the int_vector for a stream.
     void load(std::istream & in);
-
-    bool is_mapped() const noexcept { return static_cast<bool>(m_mmap_context); }
-
-    //! Load a view of a legacy-format vector while retaining its mapped file.
-    // Lab v2 mmap compatibility (GPL-3.0-or-later; see COPYING.v2).
-    size_t load(std::shared_ptr<mmap_context> const & context, size_t offset)
-    {
-        size_t const header = sizeof(uint64_t) + (t_width == 0);
-        if (offset > context->file_size_bytes() || header > context->file_size_bytes() - offset)
-            throw std::runtime_error("int_vector: header outside mapped file");
-        uint64_t bits;
-        std::memcpy(&bits, context->data() + offset, sizeof(bits));
-        uint8_t const w = t_width ? t_width : context->data()[offset + sizeof(bits)];
-        if (!w || w > 64 || bits > uint64_t(-1) - 63)
-            throw std::runtime_error("int_vector: invalid mapped header");
-        size_t const bytes = ((bits + 63) >> 6) << 3;
-        if (bytes > context->file_size_bytes() - offset - header)
-            throw std::runtime_error("int_vector: data outside mapped file");
-        memory_manager::clear(*this);
-        m_mmap_context = context;
-        m_size = bits;
-        m_capacity = ((bits + 63) >> 6) << 6;
-        width(w);
-        m_data = reinterpret_cast<uint64_t *>(context->data() + offset + header);
-        return header + bytes;
-    }
 
     /* For cereal we need to define different versions of the load and save function depending on whether we want
      * binary data or text (XML/JSON) data.
@@ -1520,8 +1492,7 @@ inline int_vector<t_width>::int_vector(int_vector && v) :
     m_size(v.m_size),
     m_capacity(v.m_capacity),
     m_data(v.m_data),
-    m_width(v.m_width),
-    m_mmap_context(std::move(v.m_mmap_context))
+    m_width(v.m_width)
 {
     v.m_data = nullptr; // ownership of v.m_data now transfered
     v.m_size = 0;
@@ -1567,7 +1538,6 @@ int_vector<t_width> & int_vector<t_width>::operator=(int_vector && v)
         m_data = v.m_data; // assign new memory
         m_width = v.m_width;
         m_capacity = v.m_capacity;
-        m_mmap_context = std::move(v.m_mmap_context);
         v.m_data = nullptr;
         v.m_size = 0;
         v.m_capacity = 0;
@@ -1592,7 +1562,7 @@ void swap(int_vector<t_width> & v1, int_vector<t_width> & v2) noexcept
 template <uint8_t t_width>
 void int_vector<t_width>::bit_resize(size_type const size)
 {
-    if (m_mmap_context || size > m_capacity || m_data == nullptr)
+    if (size > m_capacity || m_data == nullptr)
     {
         memory_manager::resize(*this, size);
     }
@@ -1928,20 +1898,6 @@ int_vector<t_width>::serialize(std::ostream & out, structure_tree_node * v, std:
 template <uint8_t t_width>
 void int_vector<t_width>::load(std::istream & in)
 {
-    if (auto * mapped = dynamic_cast<mmap_ifstream *>(&in))
-    {
-        auto const offset = in.tellg();
-        if (offset < 0)
-            throw std::ios_base::failure("int_vector: invalid stream position");
-        auto const bytes = load(mapped->get_mmap_context(), static_cast<size_t>(offset));
-        in.seekg(bytes, std::ios_base::cur);
-        return;
-    }
-    if (m_mmap_context)
-    {
-        memory_manager::clear(*this);
-        m_size = 0;
-    }
     size_type size;
     int_vector<t_width>::read_header(size, m_width, in);
 
