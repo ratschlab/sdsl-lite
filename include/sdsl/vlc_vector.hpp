@@ -213,7 +213,7 @@ vlc_vector<t_coder, t_dens, t_width>::vlc_vector(Container const & c)
     //    (2) Write z
     m_sample_pointer = int_vector<>(samples + 1, 0, bits::hi(z_size + 1) + 1);
 
-    m_z.bit_resize(z_size);
+    m_z = bit_vector(z_size, 0); // zero the padding bits that serialize writes
     z_size = 0;
     uint64_t * z_data = t_coder::raw_data(m_z);
     uint8_t offset = 0;
@@ -256,7 +256,7 @@ vlc_vector<t_coder, t_dens, t_width>::vlc_vector(int_vector_buffer<int_width> & 
     m_sample_pointer = int_vector<>(samples + 1, 0, bits::hi(z_size + 1) + 1); // add 1 for last entry
 
     //     (b) Initilize bit_vector for encoded data
-    m_z.bit_resize(z_size);
+    m_z = bit_vector(z_size, 0); // zero the padding bits that serialize writes
     z_size = 0;
     uint64_t * z_data = t_coder::raw_data(m_z);
     uint8_t offset = 0;
