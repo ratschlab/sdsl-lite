@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <sdsl/packed_vector_view.hpp>
+#include <sdsl/rank_support_v5.hpp>
 #include <sdsl/select_support_mcl.hpp>
 #include <sdsl/shared_mapper.hpp>
 
@@ -101,7 +102,6 @@ TEST_F(mapped_storage_test, view_load_rejects_truncated_payload)
     EXPECT_THROW(view.load(in), std::ios_base::failure);
 }
 
-// Load a bit vector with its select support from a mapped and a plain stream.
 template <class Select, class Bits>
 void check_select(sdsl::bit_vector const & bits, Bits const & loaded, Select const & select)
 {
@@ -117,68 +117,103 @@ void check_select(sdsl::bit_vector const & bits, Bits const & loaded, Select con
     }
 }
 
-template <uint8_t t_b>
-void check_mcl_storage(mapped_storage_test & test, std::string const & file, unsigned seed)
+template <class Rank, class Bits>
+void check_rank(sdsl::bit_vector const & bits, Bits const & loaded, Rank const & rank)
 {
-    using view_select = sdsl::select_support_mcl<t_b, 1, packed_vector_view<1>, packed_vector_view>;
-    // Below 100000 bits MCL uses its slow construction, above it the fast one.
-    for (uint64_t size : {5000ull, 300000ull})
+    uint64_t ones = 0;
+    for (uint64_t i = 0; i <= bits.size(); ++i)
     {
-        for (double density : {0.001, 0.5, 0.999})
+        ASSERT_EQ(ones, rank.rank(i));
+        if (i < bits.size())
         {
-            auto const bits = random_bits(size, density, seed++);
-            packed_vector_view<1> owned_bits(bits);
-            view_select owned(&owned_bits);
-            sdsl::select_support_mcl<t_b, 1> reference(&bits);
-            std::ostringstream ref_out;
-            reference.serialize(ref_out);
-            for (size_t prefix : {0, 3, 8})
-            {
-                {
-                    std::ostringstream out;
-                    out << std::string(prefix, 'x');
-                    owned_bits.serialize(out);
-                    owned.serialize(out);
-                    std::ofstream(file, std::ios::binary) << out.str();
-                }
-                packed_vector_view<1> mapped_bits, copied_bits;
-                view_select mapped, copied;
-                {
-                    sdsl::shared_mapper_ifstream in(file, std::ios::binary);
-                    in.seekg(prefix);
-                    mapped_bits.load(in);
-                    mapped.load(in, &mapped_bits);
-                    ASSERT_TRUE(in);
-                }
-                {
-                    std::ifstream in(file, std::ios::binary);
-                    in.seekg(prefix);
-                    copied_bits.load(in);
-                    copied.load(in, &copied_bits);
-                }
-                std::remove(file.c_str());
-                check_select(bits, mapped_bits, mapped);
-                check_select(bits, copied_bits, copied);
-                std::ostringstream a, b;
-                mapped.serialize(a);
-                copied.serialize(b);
-                EXPECT_EQ(ref_out.str(), a.str());
-                EXPECT_EQ(ref_out.str(), b.str());
-                // Copies and moves keep the mapping alive.
-                view_select copy(mapped);
-                view_select moved(std::move(mapped));
-                mapped = view_select();
-                check_select(bits, mapped_bits, copy);
-                check_select(bits, mapped_bits, moved);
-            }
+            ASSERT_EQ(bits[i], loaded[i]);
+            ones += bits[i] == Rank::bit_pat;
         }
     }
 }
 
+// Build a support with view storage over a view bit vector, then load both
+// from a mapped stream and from a plain one at several byte offsets. The
+// serialization must equal that of `Reference`, the owned type.
+template <class Support, class Reference, class Check>
+void check_support_storage(std::string const & file, sdsl::bit_vector const & bits, Check check)
+{
+    packed_vector_view<1> owned_bits(bits);
+    Support owned(&owned_bits);
+    Reference reference(&bits);
+    std::ostringstream ref_out;
+    reference.serialize(ref_out);
+    for (size_t prefix : {0, 3, 8})
+    {
+        {
+            std::ostringstream out;
+            out << std::string(prefix, 'x');
+            owned_bits.serialize(out);
+            owned.serialize(out);
+            std::ofstream(file, std::ios::binary) << out.str();
+        }
+        packed_vector_view<1> mapped_bits, copied_bits;
+        Support mapped, copied;
+        {
+            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            mapped_bits.load(in);
+            mapped.load(in, &mapped_bits);
+            ASSERT_TRUE(in);
+        }
+        {
+            std::ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            copied_bits.load(in);
+            copied.load(in, &copied_bits);
+        }
+        std::remove(file.c_str());
+        check(bits, mapped_bits, mapped);
+        check(bits, copied_bits, copied);
+        std::ostringstream a, b;
+        mapped.serialize(a);
+        copied.serialize(b);
+        EXPECT_EQ(ref_out.str(), a.str());
+        EXPECT_EQ(ref_out.str(), b.str());
+        // Copies and moves keep the mapping alive.
+        Support copy(mapped);
+        Support moved(std::move(mapped));
+        mapped = Support();
+        check(bits, mapped_bits, copy);
+        check(bits, mapped_bits, moved);
+    }
+}
+
+template <class Check>
+void for_each_bits(Check check)
+{
+    unsigned seed = 1;
+    // Below 100000 bits MCL uses its slow construction, above it the fast one.
+    for (uint64_t size : {0ull, 1ull, 64ull, 2049ull, 5000ull, 300000ull})
+        for (double density : {0.001, 0.5, 0.999})
+            check(random_bits(size, density, seed++));
+}
+
 TEST_F(mapped_storage_test, select_mcl_view_storage)
 {
-    check_mcl_storage<1>(*this, file, 1);
-    check_mcl_storage<0>(*this, file, 100);
+    for_each_bits([&](sdsl::bit_vector const & bits) {
+        using V = packed_vector_view<1>;
+        check_support_storage<sdsl::select_support_mcl<1, 1, V, packed_vector_view>, sdsl::select_support_mcl<1, 1>>(
+            file, bits, check_select<sdsl::select_support_mcl<1, 1, V, packed_vector_view>, V>);
+        check_support_storage<sdsl::select_support_mcl<0, 1, V, packed_vector_view>, sdsl::select_support_mcl<0, 1>>(
+            file, bits, check_select<sdsl::select_support_mcl<0, 1, V, packed_vector_view>, V>);
+    });
+}
+
+TEST_F(mapped_storage_test, rank_v5_view_storage)
+{
+    for_each_bits([&](sdsl::bit_vector const & bits) {
+        using V = packed_vector_view<1>;
+        using R1 = sdsl::rank_support_v5<1, 1, V, packed_vector_view>;
+        using R0 = sdsl::rank_support_v5<0, 1, V, packed_vector_view>;
+        check_support_storage<R1, sdsl::rank_support_v5<1, 1>>(file, bits, check_rank<R1, V>);
+        check_support_storage<R0, sdsl::rank_support_v5<0, 1>>(file, bits, check_rank<R0, V>);
+    });
 }
 
 } // namespace

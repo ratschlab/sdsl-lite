@@ -40,7 +40,7 @@ namespace sdsl
  *
  * @ingroup rank_support_group
  */
-template <uint8_t t_b = 1, uint8_t t_pat_len = 1, class Vector = bit_vector>
+template <uint8_t t_b = 1, uint8_t t_pat_len = 1, class Vector = bit_vector, template <uint8_t> class t_storage = int_vector>
 class rank_support_v5 : public rank_support_base<Vector>
 {
 protected:
@@ -67,7 +67,7 @@ public:
 
 private:
     //      basic block for interleaved storage of superblockrank and blockrank
-    int_vector<64> m_basic_block;
+    t_storage<64> m_basic_block;
 
 public:
     explicit rank_support_v5(Vector const * v = nullptr)
@@ -77,18 +77,26 @@ public:
         {
             return;
         }
-        else if (v->empty())
+        int_vector<64> basic_block;
+        if (v->empty())
         {
-            m_basic_block = int_vector<64>(2, 0);
-            return;
+            basic_block = int_vector<64>(2, 0);
         }
-        size_type basic_block_size = (((v->bit_size() + 63) >> 11) + 1) << 1;
-        m_basic_block.resize(basic_block_size); // resize structure for basic_blocks
-        if (m_basic_block.empty())
-            return;
+        else
+        {
+            size_type basic_block_size = (((v->bit_size() + 63) >> 11) + 1) << 1;
+            basic_block.resize(basic_block_size); // resize structure for basic_blocks
+            build(basic_block);
+        }
+        m_basic_block = t_storage<64>(std::move(basic_block));
+    }
+
+private:
+    void build(int_vector<64> & basic_block) const
+    {
         auto data = m_v->data();
         size_type i, j = 0;
-        m_basic_block[0] = m_basic_block[1] = 0;
+        basic_block[0] = basic_block[1] = 0;
 
         uint64_t carry = trait_type::init_carry();
         uint64_t sum = trait_type::args_in_the_word(detail::load_unaligned(data), carry);
@@ -99,8 +107,8 @@ public:
             if (cnt_words == 32)
             {
                 j += 2;
-                m_basic_block[j - 1] = second_level_cnt;
-                m_basic_block[j] = m_basic_block[j - 2] + sum;
+                basic_block[j - 1] = second_level_cnt;
+                basic_block[j] = basic_block[j - 2] + sum;
                 second_level_cnt = sum = cnt_words = 0;
             }
             else if ((cnt_words % 6) == 0)
@@ -118,16 +126,17 @@ public:
         if (cnt_words == 32)
         {
             j += 2;
-            m_basic_block[j - 1] = second_level_cnt;
-            m_basic_block[j] = m_basic_block[j - 2] + sum;
-            m_basic_block[j + 1] = 0;
+            basic_block[j - 1] = second_level_cnt;
+            basic_block[j] = basic_block[j - 2] + sum;
+            basic_block[j + 1] = 0;
         }
         else
         {
-            m_basic_block[j + 1] = second_level_cnt;
+            basic_block[j + 1] = second_level_cnt;
         }
     }
 
+public:
     rank_support_v5(rank_support_v5 const &) = default;
     rank_support_v5(rank_support_v5 &&) = default;
     rank_support_v5 & operator=(rank_support_v5 const &) = default;
@@ -137,7 +146,7 @@ public:
     {
         assert(m_v != nullptr);
         assert(idx <= m_v->size());
-        uint64_t const * p = m_basic_block.data() + ((idx >> 10) & 0xFFFFFFFFFFFFFFFEULL); // (idx/2048)*2
+        auto p = m_basic_block.data() + ((idx >> 10) & 0xFFFFFFFFFFFFFFFEULL); // (idx/2048)*2
         //                     ( prefix sum of the 6x64bit blocks | (idx%2048)/(64*6) )
         size_type result = detail::load_unaligned(p) + ((detail::load_unaligned(p + 1) >> (60 - 12 * ((idx & 0x7FF) / (64 * 6)))) & 0x7FFULL)
                          + ((idx & 0x3F) ? trait_type::word_rank(m_v->data(), idx) : 0);
