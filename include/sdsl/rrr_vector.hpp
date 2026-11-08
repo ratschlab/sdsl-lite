@@ -23,6 +23,8 @@
 #define INCLUDED_SDSL_RRR_VECTOR
 
 #include <iostream>
+#include <memory>
+#include <span>
 
 #include "int_vector.hpp"
 #include "iterators.hpp"
@@ -34,11 +36,11 @@ namespace sdsl
 {
 
 // forward declaration needed for friend declaration
-template <uint8_t t_b = 1, uint16_t t_bs = 15, class t_rac = int_vector<>, uint16_t t_k = 32>
+template <uint8_t t_b = 1, uint16_t t_bs = 15, class t_rac = int_vector<>, uint16_t t_k = 32, template <uint8_t> class t_storage = int_vector>
 class rank_support_rrr; // in rrr_vector
 
 // forward declaration needed for friend declaration
-template <uint8_t t_b = 1, uint16_t t_bs = 15, class t_rac = int_vector<>, uint16_t t_k = 32>
+template <uint8_t t_b = 1, uint16_t t_bs = 15, class t_rac = int_vector<>, uint16_t t_k = 32, template <uint8_t> class t_storage = int_vector>
 class select_support_rrr; // in rrr_vector
 
 //! A \f$H_0f$-compressed bitvector representation.
@@ -68,7 +70,7 @@ class select_support_rrr; // in rrr_vector
  *    In this version the block size can be adjust by the template parameter t_bs!
  *    \sa sdsl::rrr_vector for a specialized version for block_size=15
  */
-template <uint16_t t_bs = 63, class t_rac = int_vector<>, uint16_t t_k = 32>
+template <uint16_t t_bs = 63, class t_rac = int_vector<>, uint16_t t_k = 32, template <uint8_t> class t_storage = int_vector>
 class rrr_vector
 {
     static_assert(t_bs >= 3 and t_bs <= 256, "rrr_vector: block size t_bs must be 3 <= t_bs <= 256.");
@@ -83,15 +85,15 @@ public:
     typedef iterator const_iterator;
     typedef bv_tag index_category;
 
-    typedef rank_support_rrr<1, t_bs, t_rac, t_k> rank_1_type;
-    typedef rank_support_rrr<0, t_bs, t_rac, t_k> rank_0_type;
-    typedef select_support_rrr<1, t_bs, t_rac, t_k> select_1_type;
-    typedef select_support_rrr<0, t_bs, t_rac, t_k> select_0_type;
+    typedef rank_support_rrr<1, t_bs, t_rac, t_k, t_storage> rank_1_type;
+    typedef rank_support_rrr<0, t_bs, t_rac, t_k, t_storage> rank_0_type;
+    typedef select_support_rrr<1, t_bs, t_rac, t_k, t_storage> select_1_type;
+    typedef select_support_rrr<0, t_bs, t_rac, t_k, t_storage> select_0_type;
 
-    friend class rank_support_rrr<0, t_bs, t_rac, t_k>;
-    friend class rank_support_rrr<1, t_bs, t_rac, t_k>;
-    friend class select_support_rrr<0, t_bs, t_rac, t_k>;
-    friend class select_support_rrr<1, t_bs, t_rac, t_k>;
+    friend class rank_support_rrr<0, t_bs, t_rac, t_k, t_storage>;
+    friend class rank_support_rrr<1, t_bs, t_rac, t_k, t_storage>;
+    friend class select_support_rrr<0, t_bs, t_rac, t_k, t_storage>;
+    friend class select_support_rrr<1, t_bs, t_rac, t_k, t_storage>;
 
     typedef rrr_helper<t_bs> rrr_helper_type;
     typedef typename rrr_helper_type::number_type number_type;
@@ -105,9 +107,9 @@ private:
     size_type m_size = 0; // Size of the original bit_vector.
     rac_type m_bt;        // Vector for the block types (bt). bt equals the
     // number of set bits in the block.
-    bit_vector m_btnr;    // Compressed block type numbers.
-    int_vector<> m_btnrp; // Sample pointers into m_btnr.
-    int_vector<> m_rank;  // Sample rank values.
+    t_storage<1> m_btnr;    // Compressed block type numbers.
+    t_storage<0> m_btnrp; // Sample pointers into m_btnr.
+    t_storage<0> m_rank;  // Sample rank values.
 
 public:
     //! Default constructor
@@ -120,6 +122,34 @@ public:
         *  \param k   Store rank samples and pointers each k-th blocks.
         */
     rrr_vector(bit_vector const & bv)
+    {
+        if constexpr (std::is_same_v<t_storage<1>, bit_vector>)
+        {
+            construct(bv);
+        }
+        else
+        {
+            // Keep the four constructed arrays in one shared owner.
+            auto owned = std::make_shared<rrr_vector<t_bs, int_vector<>, t_k>>(bv);
+            auto view = [&]<uint8_t Width>(int_vector<Width> const & values)
+            {
+                return t_storage<Width>(t_storage<Width>::from_bytes(
+                    owned, std::as_bytes(std::span(values.data(), values.bit_capacity() / 64)),
+                    values.bit_size(), values.width()));
+            };
+            m_size = owned->m_size;
+            m_bt = rac_type(view(owned->m_bt));
+            m_btnr = view(owned->m_btnr);
+            m_btnrp = view(owned->m_btnrp);
+            m_rank = view(owned->m_rank);
+        }
+    }
+
+private:
+    template <uint16_t, class, uint16_t, template <uint8_t> class>
+    friend class rrr_vector;
+
+    void construct(bit_vector const & bv)
     {
         m_size = bv.size();
         int_vector<> bt_array((m_size + t_bs) / ((size_type)t_bs), 0, bits::hi(t_bs) + 1);
@@ -211,6 +241,7 @@ public:
         m_bt = bt_array;
     }
 
+public:
     //! Swap method
     void swap(rrr_vector & rrr)
     {
@@ -512,13 +543,13 @@ struct rank_support_rrr_trait<0>
 *    is this called hinted binary search???
 *    or is this called
 */
-template <uint8_t t_b, uint16_t t_bs, class t_rac, uint16_t t_k>
+template <uint8_t t_b, uint16_t t_bs, class t_rac, uint16_t t_k, template <uint8_t> class t_storage>
 class rank_support_rrr
 {
     static_assert(t_b == 1u or t_b == 0u, "rank_support_rrr: bit pattern must be `0` or `1`");
 
 public:
-    typedef rrr_vector<t_bs, t_rac, t_k> bit_vector_type;
+    typedef rrr_vector<t_bs, t_rac, t_k, t_storage> bit_vector_type;
     typedef typename bit_vector_type::size_type size_type;
     typedef typename bit_vector_type::rrr_helper_type rrr_helper_type;
     typedef typename rrr_helper_type::number_type number_type;
@@ -659,13 +690,13 @@ public:
 * Experiments on select_support_interleaved showed about
 * 25%.
 */
-template <uint8_t t_b, uint16_t t_bs, class t_rac, uint16_t t_k>
+template <uint8_t t_b, uint16_t t_bs, class t_rac, uint16_t t_k, template <uint8_t> class t_storage>
 class select_support_rrr
 {
     static_assert(t_b == 1u or t_b == 0u, "select_support_rrr: bit pattern must be `0` or `1`");
 
 public:
-    typedef rrr_vector<t_bs, t_rac, t_k> bit_vector_type;
+    typedef rrr_vector<t_bs, t_rac, t_k, t_storage> bit_vector_type;
     typedef typename bit_vector_type::size_type size_type;
     typedef typename bit_vector_type::rrr_helper_type rrr_helper_type;
     typedef typename rrr_helper_type::number_type number_type;

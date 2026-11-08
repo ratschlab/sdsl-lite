@@ -132,8 +132,8 @@ inline binomial15::impl binomial15::iii;
  *    destination block. That can be done by using bit-parallelism on
  *    64-bit words.
 */
-template <class t_rac, uint16_t t_k>
-class rrr_vector<15, t_rac, t_k>
+template <class t_rac, uint16_t t_k, template <uint8_t> class t_storage>
+class rrr_vector<15, t_rac, t_k, t_storage>
 {
 public:
     typedef bit_vector::size_type size_type;
@@ -143,15 +143,15 @@ public:
     typedef random_access_const_iterator<rrr_vector> iterator;
     typedef bv_tag index_category;
 
-    friend class rank_support_rrr<0, 15, t_rac, t_k>;
-    friend class rank_support_rrr<1, 15, t_rac, t_k>;
-    friend class select_support_rrr<0, 15, t_rac, t_k>;
-    friend class select_support_rrr<1, 15, t_rac, t_k>;
+    friend class rank_support_rrr<0, 15, t_rac, t_k, t_storage>;
+    friend class rank_support_rrr<1, 15, t_rac, t_k, t_storage>;
+    friend class select_support_rrr<0, 15, t_rac, t_k, t_storage>;
+    friend class select_support_rrr<1, 15, t_rac, t_k, t_storage>;
 
-    typedef rank_support_rrr<1, 15, t_rac, t_k> rank_1_type;
-    typedef rank_support_rrr<0, 15, t_rac, t_k> rank_0_type;
-    typedef select_support_rrr<1, 15, t_rac, t_k> select_1_type;
-    typedef select_support_rrr<0, 15, t_rac, t_k> select_0_type;
+    typedef rank_support_rrr<1, 15, t_rac, t_k, t_storage> rank_1_type;
+    typedef rank_support_rrr<0, 15, t_rac, t_k, t_storage> rank_0_type;
+    typedef select_support_rrr<1, 15, t_rac, t_k, t_storage> select_1_type;
+    typedef select_support_rrr<0, 15, t_rac, t_k, t_storage> select_0_type;
 
     enum
     {
@@ -163,9 +163,17 @@ private:
     size_type m_size = 0; // Size of the original bit_vector.
     rac_type m_bt;        // Vector for block types (bt). bt equals the
     // number of set bits in the block.
-    bit_vector m_btnr;    // Compressed block type numbers.
-    int_vector<> m_btnrp; // Sample pointers into m_btnr.
-    int_vector<> m_rank;  // Sample rank values.
+    t_storage<1> m_btnr;    // Compressed block type numbers.
+    t_storage<0> m_btnrp; // Sample pointers into m_btnr.
+    t_storage<0> m_rank;  // Sample rank values.
+
+    uint8_t const * block_type_bytes() const
+    {
+        if constexpr (requires { m_bt.bytes(); })
+            return reinterpret_cast<uint8_t const *>(m_bt.bytes().data());
+        else
+            return reinterpret_cast<uint8_t const *>(m_bt.data());
+    }
 
 public:
     //! Default constructor
@@ -178,6 +186,34 @@ public:
         *  \param k  Store rank samples and pointers each k-th blocks.
         */
     rrr_vector(bit_vector const & bv)
+    {
+        if constexpr (std::is_same_v<t_storage<1>, bit_vector>)
+        {
+            construct(bv);
+        }
+        else
+        {
+            // Keep the four constructed arrays in one shared owner.
+            auto owned = std::make_shared<rrr_vector<15, int_vector<>, t_k>>(bv);
+            auto view = [&]<uint8_t Width>(int_vector<Width> const & values)
+            {
+                return t_storage<Width>(t_storage<Width>::from_bytes(
+                    owned, std::as_bytes(std::span(values.data(), values.bit_capacity() / 64)),
+                    values.bit_size(), values.width()));
+            };
+            m_size = owned->m_size;
+            m_bt = rac_type(view(owned->m_bt));
+            m_btnr = view(owned->m_btnr);
+            m_btnrp = view(owned->m_btnrp);
+            m_rank = view(owned->m_rank);
+        }
+    }
+
+private:
+    template <uint16_t, class, uint16_t, template <uint8_t> class>
+    friend class rrr_vector;
+
+    void construct(bit_vector const & bv)
     {
         m_size = bv.size();
         int_vector<> bt_array;
@@ -253,6 +289,7 @@ public:
         m_bt = rac_type(std::move(bt_array));
     }
 
+public:
     //! Swap method
     void swap(rrr_vector & rrr)
     {
@@ -273,7 +310,7 @@ public:
     value_type operator[](size_type i) const
     {
         size_type bt_idx = i / block_size;
-        uint8_t * bt = (uint8_t *)(m_bt.data());
+        uint8_t const * bt = block_type_bytes();
         uint32_t i_bt = *(bt + (bt_idx / 2));
         if (bt_idx % 2 == 1)
         {
@@ -441,13 +478,13 @@ public:
 //! rank_support for the specialized rrr_vector class of block size 15.
 /*! The first template parameter is the bit pattern of size one.
 */
-template <uint8_t t_b, class t_rac, uint16_t t_k>
-class rank_support_rrr<t_b, 15, t_rac, t_k>
+template <uint8_t t_b, class t_rac, uint16_t t_k, template <uint8_t> class t_storage>
+class rank_support_rrr<t_b, 15, t_rac, t_k, t_storage>
 {
     static_assert(t_b == 1u or t_b == 0u, "rank_support_rrr: bit pattern must be `0` or `1`");
 
 public:
-    typedef rrr_vector<15, t_rac, t_k> bit_vector_type;
+    typedef rrr_vector<15, t_rac, t_k, t_storage> bit_vector_type;
     typedef typename bit_vector_type::size_type size_type;
     typedef typename bit_vector_type::bi_type bi_type;
     enum
@@ -501,7 +538,7 @@ public:
                                                                 i);
             }
         }
-        uint8_t * bt = (uint8_t *)(m_v->m_bt.data());
+        uint8_t const * bt = m_v->block_type_bytes();
 
         uint8_t last_bt = *(bt + (bt_idx / 2));
         if (bt_idx % 2 == 1)
@@ -523,32 +560,32 @@ public:
             if (bt_idx == j)
                 return rank_support_rrr_trait<t_b>::adjust_rank(rank, i);
             // now j < bt_idx
-            uint64_t const * bt64 = m_v->m_bt.data() + (j >> 6); // get the word of the start
+            auto bt64 = m_v->m_bt.data() + (j >> 6); // get the word of the start
             uint8_t bt64_off = j & 0x3F;                         // get the offset in the word of the start
-            uint64_t const * bt64_end = m_v->m_bt.data() + (bt_idx >> 6);
+            auto bt64_end = m_v->m_bt.data() + (bt_idx >> 6);
             uint8_t bt64_end_off = bt_idx & 0x3F;
             // Case (1)
             if (bt64 == bt64_end)
             {
-                uint64_t w = ((*bt64) >> bt64_off) & bits::lo_set[bt64_end_off - bt64_off];
+                uint64_t w = (detail::load_unaligned(bt64) >> bt64_off) & bits::lo_set[bt64_end_off - bt64_off];
                 w = (w & 0x0f0f0f0f0f0f0f0full) + ((w >> 4) & 0x0f0f0f0f0f0f0f0full);
                 rank += ((0x0101010101010101ull * w) >> 56);
             }
             else
             { // Case (2)
-                uint64_t w = ((*bt64) >> bt64_off);
+                uint64_t w = (detail::load_unaligned(bt64) >> bt64_off);
                 w = (w & 0x0f0f0f0f0f0f0f0full) + ((w >> 4) & 0x0f0f0f0f0f0f0f0full);
                 rank += ((0x0101010101010101ull * w) >> 56);
                 while ((++bt64) != bt64_end)
                 {
-                    w = *bt64;
+                    w = detail::load_unaligned(bt64);
                     w = (w & 0x0f0f0f0f0f0f0f0full) + ((w >> 4) & 0x0f0f0f0f0f0f0f0full);
                     rank += ((0x0101010101010101ull * w) >> 56);
                 }
                 // now bt64 == bt64_end
                 if (bt64_end_off > 0)
                 {
-                    w = *bt64 << (64 - bt64_end_off);
+                    w = detail::load_unaligned(bt64) << (64 - bt64_end_off);
                     w = (w & 0x0f0f0f0f0f0f0f0full) + ((w >> 4) & 0x0f0f0f0f0f0f0f0full);
                     rank += ((0x0101010101010101ull * w) >> 56);
                 }
@@ -653,13 +690,13 @@ public:
 };
 
 //! Select support for the specialized rrr_vector class of block size 15.
-template <uint8_t t_b, class t_rac, uint16_t t_k>
-class select_support_rrr<t_b, 15, t_rac, t_k>
+template <uint8_t t_b, class t_rac, uint16_t t_k, template <uint8_t> class t_storage>
+class select_support_rrr<t_b, 15, t_rac, t_k, t_storage>
 {
     static_assert(t_b == 1u or t_b == 0u, "select_support_rrr: bit pattern must be `0` or `1`");
 
 public:
-    typedef rrr_vector<15, t_rac, t_k> bit_vector_type;
+    typedef rrr_vector<15, t_rac, t_k, t_storage> bit_vector_type;
     typedef typename bit_vector_type::size_type size_type;
     typedef typename bit_vector_type::bi_type bi_type;
     enum
