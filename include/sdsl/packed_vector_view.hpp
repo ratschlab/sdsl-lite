@@ -1,7 +1,10 @@
 #ifndef SDSL_PACKED_VECTOR_VIEW_HPP
 #define SDSL_PACKED_VECTOR_VIEW_HPP
 #include <cassert>
+#include <cstring>
+#include <istream>
 #include <memory>
+#include <ostream>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -11,12 +14,16 @@
 #include <sdsl/int_vector_mapper.hpp>
 #include <sdsl/iterators.hpp>
 #include <sdsl/packed_word_iterator.hpp>
+#include <sdsl/shared_mapper.hpp>
+#include <sdsl/structure_tree.hpp>
 namespace sdsl
 {
-// Immutable packed storage, independent of any serialized header format.
-// Payloads contain whole 64-bit words but need not be aligned in memory.
-// Copies retain the shared storage. Iterators and rank/select supports borrow
-// the view object, which must outlive them. No mutable access is exposed.
+// Immutable packed storage. Payloads contain whole 64-bit words but need not
+// be aligned in memory. Copies retain the shared storage. Iterators and
+// rank/select supports borrow the view object, which must outlive them.
+// No mutable access is exposed. load() and serialize() use the int_vector<Width>
+// format; load() maps the payload from a shared_mapper_ifstream and copies it
+// from any other stream.
 template <uint8_t Width = 0>
 class packed_vector_view : public std::ranges::view_interface<packed_vector_view<Width>>
 {
@@ -85,6 +92,53 @@ public:
             throw std::out_of_range("Packed view offset");
         std::span bytes(reinterpret_cast<std::byte const *>(owner->data()), owner->size());
         return from_bytes(owner, bytes.subspan(offset), bit_size, width);
+    }
+    void load(std::istream & in)
+    {
+        packed_vector_view next;
+        auto * mapped = dynamic_cast<shared_mapper_ifstream *>(&in);
+        if (mapped && mapped->mapper())
+        {
+            int_vector_size_type bits = 0;
+            uint8_t width = Width;
+            vector_type::read_header(bits, width, in);
+            auto const pos = in.tellg();
+            if (!in || pos < 0)
+                throw std::ios_base::failure("packed_vector_view: cannot read header");
+            auto const & owner = mapped->mapper();
+            std::span file(reinterpret_cast<std::byte const *>(owner->data()), owner->size());
+            if (static_cast<uint64_t>(pos) > file.size())
+                throw std::ios_base::failure("packed_vector_view: header outside file");
+            try
+            {
+                next = from_bytes(owner, file.subspan(pos), bits, width);
+            }
+            catch (std::invalid_argument const & e)
+            {
+                throw std::ios_base::failure(std::string("packed_vector_view: ") + e.what());
+            }
+            in.seekg(next.bytes().size(), std::ios_base::cur);
+        }
+        else
+        {
+            vector_type value;
+            value.load(in);
+            next = packed_vector_view(std::move(value));
+        }
+        if (!in)
+            throw std::ios_base::failure("packed_vector_view: cannot load");
+        *this = std::move(next);
+    }
+    uint64_t serialize(std::ostream & out, structure_tree_node * v = nullptr, std::string name = "") const
+    {
+        structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
+        uint64_t written = vector_type::write_header(bits_, width(), out);
+        auto const payload = bytes();
+        if (!payload.empty())
+            out.write(reinterpret_cast<char const *>(payload.data()), payload.size());
+        written += payload.size();
+        structure_tree::add_size(child, written);
+        return written;
     }
     void swap(packed_vector_view & v) noexcept
     {

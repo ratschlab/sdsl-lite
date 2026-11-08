@@ -22,6 +22,7 @@
 #define INCLUDED_SDSL_SELECT_SUPPORT_MCL
 
 #include "int_vector.hpp"
+#include "shared_mapper.hpp"
 #include "select_support.hpp"
 #include "util.hpp"
 
@@ -102,7 +103,9 @@ private:
     Storage<0> m_superblock;
     Storage<1> m_miniblock;
     int_vector<0> * m_block = nullptr;
-    std::shared_ptr<mmap_context> m_mmap_context;
+    // Mapped miniblocks (view storage only): one owner, payload offsets into m_base.
+    std::shared_ptr<void const> m_owner;
+    std::byte const * m_base = nullptr;
     int_vector<0> m_block_offset;
     int_vector<8> m_block_width;
     size_type m_arg_cnt = 0;
@@ -128,7 +131,8 @@ private:
         if (!ss.m_miniblock.empty())
             m_miniblock = Storage<1>(std::move(ss.m_miniblock));
         m_block = std::exchange(ss.m_block, nullptr);
-        m_mmap_context = std::move(ss.m_mmap_context);
+        m_owner = std::move(ss.m_owner);
+        m_base = std::exchange(ss.m_base, nullptr);
         m_block_offset = std::move(ss.m_block_offset);
         m_block_width = std::move(ss.m_block_width);
     }
@@ -262,7 +266,8 @@ select_support_mcl<t_b, t_pat_len, Vector, Storage> & select_support_mcl<t_b, t_
         m_v = ss.m_v;                              // copy pointer to the supported bit vector
 
         m_miniblock = std::move(ss.m_miniblock);
-        m_mmap_context = std::move(ss.m_mmap_context);
+        m_owner = std::move(ss.m_owner);
+        m_base = std::exchange(ss.m_base, nullptr);
         m_block_offset = std::move(ss.m_block_offset);
         m_block_width = std::move(ss.m_block_width);
 
@@ -282,7 +287,8 @@ void select_support_mcl<t_b, t_pat_len, Vector, Storage>::swap(select_support_mc
     m_superblock.swap(ss.m_superblock);
     std::swap(m_miniblock, ss.m_miniblock);
     std::swap(m_block, ss.m_block);
-    std::swap(m_mmap_context, ss.m_mmap_context);
+    std::swap(m_owner, ss.m_owner);
+    std::swap(m_base, ss.m_base);
     m_block_offset.swap(ss.m_block_offset);
     m_block_width.swap(ss.m_block_width);
     std::swap(m_arg_cnt, ss.m_arg_cnt);
@@ -300,7 +306,8 @@ void select_support_mcl<t_b, t_pat_len, Vector, Storage>::copy(select_support_mc
     size_type sb = (m_arg_cnt + 4095) >> 12;
 
     m_miniblock = ss.m_miniblock;
-    m_mmap_context = ss.m_mmap_context;
+    m_owner = ss.m_owner;
+    m_base = ss.m_base;
     m_block_offset = ss.m_block_offset;
     m_block_width = ss.m_block_width;
 
@@ -329,7 +336,7 @@ inline uint64_t select_support_mcl<t_b, t_pat_len, Vector, Storage>::miniblock_v
     {
         return m_block[sb_idx][idx];
     }
-    assert(m_mmap_context);
+    assert(m_base);
     assert(sb_idx < m_block_offset.size());
     assert(sb_idx < m_block_width.size());
     uint8_t const width = m_block_width[sb_idx];
@@ -337,7 +344,7 @@ inline uint64_t select_support_mcl<t_b, t_pat_len, Vector, Storage>::miniblock_v
     assert(idx < miniblock_size(sb_idx));
     size_type const bit_idx = idx * static_cast<size_type>(width);
     size_type const byte_offset = m_block_offset[sb_idx];
-    uint64_t const * data = reinterpret_cast<uint64_t const *>(m_mmap_context->data() + byte_offset);
+    packed_word_iterator data(m_base + byte_offset);
     return bits::read_int(data + (bit_idx >> 6), static_cast<uint8_t>(bit_idx & 0x3F), width);
 }
 
@@ -608,7 +615,8 @@ void select_support_mcl<t_b, t_pat_len, Vector, Storage>::initData()
         m_logn4 = m_logn2 * m_logn2;
     }
     m_miniblock = Storage<1>();
-    m_mmap_context.reset();
+    m_owner.reset();
+    m_base = nullptr;
     m_block_offset = int_vector<0>();
     m_block_width = int_vector<8>();
     delete[] m_block;
@@ -655,12 +663,12 @@ auto select_support_mcl<t_b, t_pat_len, Vector, Storage>::serialize(std::ostream
             }
             else
             {
-                assert(m_mmap_context);
+                assert(m_base);
                 assert(i < m_block_offset.size());
                 size_type const header_offset = m_block_offset[i] - 9;
-                uint64_t const size_bits = detail::load_unaligned(reinterpret_cast<uint64_t const *>(m_mmap_context->data() + header_offset));
+                uint64_t const size_bits = detail::load_unaligned<uint64_t>(m_base + header_offset);
                 size_type const bytes = 9 + (((size_bits + 63) >> 6) << 3);
-                out.write(reinterpret_cast<char const *>(m_mmap_context->data() + header_offset), bytes);
+                out.write(reinterpret_cast<char const *>(m_base + header_offset), bytes);
                 if (is_long)
                 {
                     written_bytes_long += bytes;
@@ -698,17 +706,23 @@ void select_support_mcl<t_b, t_pat_len, Vector, Storage>::load(std::istream & in
         m_superblock.load(in); // load superblocks
 
         m_miniblock.load(in); // Load the mini_or_long helper vector
+        if (m_superblock.size() != sb or (m_miniblock.size() and m_miniblock.size() != sb))
+            throw std::ios_base::failure("select_support_mcl: inconsistent sample sizes");
 
-        if (auto * mmap_in = dynamic_cast<mmap_ifstream *>(&in))
+        auto * mapped = dynamic_cast<shared_mapper_ifstream *>(&in);
+        if (!std::is_same_v<Storage<0>, int_vector<0>> && mapped && mapped->mapper())
         {
-            m_mmap_context = mmap_in->get_mmap_context();
+            // View storage: refer to the miniblocks in the mapping instead of copying them.
+            auto const & mapper = mapped->mapper();
+            m_base = reinterpret_cast<std::byte const *>(mapper->data());
+            m_owner = mapper;
             std::streampos stream_offset = in.tellg();
             if (stream_offset < 0)
             {
                 throw std::ios_base::failure("bad stream");
             }
             size_type offset = static_cast<size_type>(stream_offset);
-            size_type const file_size = m_mmap_context->file_size_bytes();
+            size_type const file_size = mapper->size();
             m_block_offset = int_vector<0>(sb, 0, 64);
             m_block_width = int_vector<8>(sb, 0);
             for (size_type i = 0; i < sb; ++i)
@@ -717,10 +731,10 @@ void select_support_mcl<t_b, t_pat_len, Vector, Storage>::load(std::istream & in
                 {
                     throw std::runtime_error("trying reading beyond the mmap'ed file");
                 }
-                m_block_width[i] = m_mmap_context->data()[offset + 8];
+                m_block_width[i] = std::to_integer<uint8_t>(m_base[offset + 8]);
                 if (m_block_width[i] == 0 or m_block_width[i] > 64)
                     throw std::runtime_error("select_support_mcl: invalid block width in mmap'd file");
-                if (detail::load_unaligned(reinterpret_cast<uint64_t const *>(m_mmap_context->data() + offset))
+                if (detail::load_unaligned<uint64_t>(m_base + offset)
                     != miniblock_size(i) * static_cast<uint64_t>(m_block_width[i]))
                     throw std::runtime_error("select_support_mcl: block size mismatch in mmap'd file");
                 m_block_offset[i] = offset + 9;

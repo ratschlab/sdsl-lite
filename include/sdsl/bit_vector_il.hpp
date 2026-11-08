@@ -30,10 +30,11 @@
 namespace sdsl
 {
 
-template <uint8_t t_b = 1, uint32_t t_bs = 512> // forward declaration needed for friend declaration
-class rank_support_il;                          // in bit_vector_il
-template <uint8_t t_b = 1, uint32_t t_bs = 512> // forward declaration needed for friend declaration
-class select_support_il;                        // in bit_vector_il
+// forward declarations needed for friend declarations
+template <uint8_t t_b = 1, uint32_t t_bs = 512, template <uint8_t> class t_storage = int_vector>
+class rank_support_il;
+template <uint8_t t_b = 1, uint32_t t_bs = 512, template <uint8_t> class t_storage = int_vector>
+class select_support_il;
 
 template <class T>
 constexpr bool power_of_two(T x)
@@ -50,7 +51,7 @@ constexpr bool power_of_two(T x)
  *
  * \tparam t_bs Block size in bits. t_bs has to be a power of 2 and t_bs >= 64.
  */
-template <uint32_t t_bs = 512>
+template <uint32_t t_bs = 512, template <uint8_t> class t_storage = int_vector>
 class bit_vector_il
 {
     static_assert(t_bs >= 64, "bit_vector_il: blocksize must be be at least 64 bits.");
@@ -64,23 +65,26 @@ public:
     typedef iterator const_iterator;
     typedef bv_tag index_category;
 
-    friend class rank_support_il<1, t_bs>;
-    friend class rank_support_il<0, t_bs>;
-    friend class select_support_il<1, t_bs>;
-    friend class select_support_il<0, t_bs>;
+    friend class rank_support_il<1, t_bs, t_storage>;
+    friend class rank_support_il<0, t_bs, t_storage>;
+    friend class select_support_il<1, t_bs, t_storage>;
+    friend class select_support_il<0, t_bs, t_storage>;
 
-    typedef rank_support_il<1, t_bs> rank_1_type;
-    typedef rank_support_il<0, t_bs> rank_0_type;
-    typedef select_support_il<1, t_bs> select_1_type;
-    typedef select_support_il<0, t_bs> select_0_type;
+    typedef rank_support_il<1, t_bs, t_storage> rank_1_type;
+    typedef rank_support_il<0, t_bs, t_storage> rank_0_type;
+    typedef select_support_il<1, t_bs, t_storage> select_1_type;
+    typedef select_support_il<0, t_bs, t_storage> select_0_type;
 
 private:
     size_type m_size = 0;        //!< Size of the original bitvector
     size_type m_block_num = 0;   //!< Total size of m_data in uint64_t ss
     size_type m_superblocks = 0; //!< Number of superblocks
     size_type m_block_shift = 0;
-    int_vector<64> m_data;         //!< Data container
-    int_vector<64> m_rank_samples; //!< Space for additional rank samples
+    t_storage<64> m_data;         //!< Data container
+    t_storage<64> m_rank_samples; //!< Space for additional rank samples
+
+    template <uint32_t, template <uint8_t> class>
+    friend class bit_vector_il;
 
     // precondition: m_rank_samples.size() <= m_superblocks
     void init_rank_samples()
@@ -118,6 +122,25 @@ public:
     bit_vector_il & operator=(bit_vector_il &&) = default;
 
     bit_vector_il(bit_vector const & bv)
+    {
+        if constexpr (std::is_same_v<t_storage<64>, int_vector<64>>)
+        {
+            construct(bv);
+        }
+        else
+        {
+            bit_vector_il<t_bs> owned(bv);
+            m_size = owned.m_size;
+            m_block_num = owned.m_block_num;
+            m_superblocks = owned.m_superblocks;
+            m_block_shift = owned.m_block_shift;
+            m_data = t_storage<64>(std::move(owned.m_data));
+            m_rank_samples = t_storage<64>(std::move(owned.m_rank_samples));
+        }
+    }
+
+private:
+    void construct(bit_vector const & bv)
     {
         m_size = bv.size();
         /* calculate the number of superblocks */
@@ -169,6 +192,7 @@ public:
         init_rank_samples();
     }
 
+public:
     //! Accessing the i-th element of the original bit_vector
     /*!\param i An index i with \f$ 0 \leq i < size()  \f$.
      *  \return The i-th bit of the original bit_vector
@@ -284,14 +308,14 @@ public:
     }
 };
 
-template <uint8_t t_b, uint32_t t_bs>
+template <uint8_t t_b, uint32_t t_bs, template <uint8_t> class t_storage>
 class rank_support_il
 {
     static_assert(t_b == 1 or t_b == 0, "rank_support_il only supports bitpatterns 0 or 1.");
 
 public:
     typedef bit_vector::size_type size_type;
-    typedef bit_vector_il<t_bs> bit_vector_type;
+    typedef bit_vector_il<t_bs, t_storage> bit_vector_type;
     enum
     {
         bit_pat = t_b
@@ -312,7 +336,7 @@ private:
         size_type SBlockNum = i >> m_block_shift;
         size_type SBlockPos = (SBlockNum << m_block_size_U64) + SBlockNum;
         uint64_t resp = m_v->m_data[SBlockPos];
-        uint64_t const * B = (m_v->m_data.data() + (SBlockPos + 1));
+        auto B = (m_v->m_data.data() + (SBlockPos + 1));
         uint64_t rem = i & 63;
         uint64_t bits = (i & m_block_mask) - rem;
         while (bits)
@@ -329,7 +353,7 @@ private:
         size_type SBlockNum = i >> m_block_shift;
         size_type SBlockPos = (SBlockNum << m_block_size_U64) + SBlockNum;
         uint64_t resp = (SBlockNum << m_block_shift) - m_v->m_data[SBlockPos];
-        uint64_t const * B = (m_v->m_data.data() + (SBlockPos + 1));
+        auto B = (m_v->m_data.data() + (SBlockPos + 1));
         uint64_t rem = i & 63;
         uint64_t bits = (i & m_block_mask) - rem;
         while (bits)
@@ -412,14 +436,14 @@ public:
     }
 };
 
-template <uint8_t t_b, uint32_t t_bs>
+template <uint8_t t_b, uint32_t t_bs, template <uint8_t> class t_storage>
 class select_support_il
 {
     static_assert(t_b == 1 or t_b == 0, "select_support_il only supports bitpatterns 0 or 1.");
 
 public:
     typedef bit_vector::size_type size_type;
-    typedef bit_vector_il<t_bs> bit_vector_type;
+    typedef bit_vector_il<t_bs, t_storage> bit_vector_type;
     enum
     {
         bit_pat = t_b
@@ -481,7 +505,7 @@ private:
         }
         res = (rb - 1) << m_block_shift;
         /* iterate in 64 bit steps */
-        uint64_t const * w = m_v->m_data.data() + ((rb - 1) << m_block_size_U64) + (rb - 1);
+        auto w = m_v->m_data.data() + ((rb - 1) << m_block_size_U64) + (rb - 1);
         i -= *w; // subtract the cumulative sum before the superblock
         ++w;     /* step into the data */
         size_type ones = bits::cnt(*w);
@@ -544,7 +568,7 @@ private:
         res = (rb - 1) << m_block_shift;
 
         /* iterate in 64 bit steps */
-        uint64_t const * w = m_v->m_data.data() + ((rb - 1) << m_block_size_U64) + (rb - 1);
+        auto w = m_v->m_data.data() + ((rb - 1) << m_block_size_U64) + (rb - 1);
         i = i - (res - *w); // substract the cumulative sum before the superblock
         ++w;                /* step into the data */
         size_type zeros = bits::cnt(~*w);

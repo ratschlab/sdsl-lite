@@ -1200,11 +1200,10 @@ public:
     }
 
 protected:
-    template<class Map>
-    mmap_ifstream(std::string const &filename, std::ios_base::openmode mode, Map map)
-        : std::ifstream(filename, mode) {
-        if (good()) m_mmap_context = map();
-    }
+    struct defer_mapping {};
+    mmap_ifstream(std::string const &filename, std::ios_base::openmode mode, defer_mapping)
+        : std::ifstream(filename, mode) {}
+    void set_mmap_context(std::shared_ptr<mmap_context> context) { m_mmap_context = std::move(context); }
 
 private:
     std::shared_ptr<mmap_context> m_mmap_context;
