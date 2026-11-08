@@ -29,6 +29,9 @@
 namespace sdsl
 {
 
+template <class, class, class, class>
+class sd_vector;
+
 //! A class supporting constant time select queries.
 /*!
  * \par Space usage
@@ -108,9 +111,10 @@ private:
     void copy(select_support_mcl<t_b, t_pat_len, Vector, Storage> const & ss);
     void initData();
     void init_fast(Vector const * v = nullptr);
+    // Only sd_vector moves samples between vector types.
+    template <class, class, class, class>
+    friend class sd_vector;
 
-public:
-    explicit select_support_mcl(Vector const * v = nullptr);
     // Transfer existing samples without rebuilding their select index.
     template <class OtherVector>
     select_support_mcl(select_support_mcl<t_b, t_pat_len, OtherVector> && ss, Vector const * v) : base_type(v)
@@ -129,6 +133,8 @@ public:
         m_block_width = std::move(ss.m_block_width);
     }
 
+public:
+    explicit select_support_mcl(Vector const * v = nullptr);
     select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector, Storage> const & ss);
     select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector, Storage> && ss);
     ~select_support_mcl();
