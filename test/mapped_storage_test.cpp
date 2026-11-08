@@ -10,7 +10,9 @@
 #include <sdsl/bit_vector_il.hpp>
 #include <sdsl/packed_vector_view.hpp>
 #include <sdsl/rank_support_v5.hpp>
+#include <sdsl/rank_support_v.hpp>
 #include <sdsl/select_support_mcl.hpp>
+#include <sdsl/wt_huff.hpp>
 #include <sdsl/shared_mapper.hpp>
 
 #include <gtest/gtest.h>
@@ -293,6 +295,84 @@ TEST_F(mapped_storage_test, il_view_storage)
     // Rank samples are only stored above 64Ki blocks.
     auto const bits = random_bits(5'000'000, 0.3, 7);
     check_bit_vector_storage<sdsl::bit_vector_il<64, packed_vector_view>, sdsl::bit_vector_il<64>>(file, bits);
+}
+
+TEST_F(mapped_storage_test, rank_v_view_storage)
+{
+    for_each_bits([&](sdsl::bit_vector const & bits) {
+        using V = packed_vector_view<1>;
+        using R1 = sdsl::rank_support_v<1, 1, V, packed_vector_view>;
+        using R0 = sdsl::rank_support_v<0, 1, V, packed_vector_view>;
+        check_support_storage<R1, sdsl::rank_support_v<1, 1>>(file, bits, check_rank<R1, V>);
+        check_support_storage<R0, sdsl::rank_support_v<0, 1>>(file, bits, check_rank<R0, V>);
+    });
+}
+
+using view_wt_huff = sdsl::wt_huff<packed_vector_view<1>,
+                                   sdsl::rank_support_v<1, 1, packed_vector_view<1>, packed_vector_view>,
+                                   sdsl::select_support_mcl<1, 1, packed_vector_view<1>, packed_vector_view>,
+                                   sdsl::select_support_mcl<0, 1, packed_vector_view<1>, packed_vector_view>>;
+
+template <class WT>
+void check_wt(sdsl::int_vector<8> const & text, WT const & wt)
+{
+    ASSERT_EQ(text.size(), wt.size());
+    std::vector<uint64_t> count(256, 0);
+    for (uint64_t i = 0; i < text.size(); ++i)
+    {
+        ASSERT_EQ(count[text[i]], wt.rank(i, text[i]));
+        ASSERT_EQ(text[i], wt[i]);
+        ++count[text[i]];
+        ASSERT_EQ(i, wt.select(count[text[i]], text[i]));
+    }
+}
+
+TEST_F(mapped_storage_test, wt_huff_view_storage)
+{
+    std::mt19937_64 rng(5);
+    for (uint64_t size : {0ull, 1ull, 1000ull, 200000ull})
+    {
+        for (unsigned sigma : {1u, 4u, 200u})
+        {
+            sdsl::int_vector<8> text(size);
+            std::geometric_distribution<unsigned> symbol(0.3);
+            for (auto && c : text)
+                c = 1 + symbol(rng) % sigma;
+            view_wt_huff built(text.begin(), text.end());
+            std::ostringstream ref_out, built_out;
+            sdsl::wt_huff<>(text.begin(), text.end()).serialize(ref_out);
+            built.serialize(built_out);
+            ASSERT_EQ(ref_out.str(), built_out.str());
+            check_wt(text, built);
+            for (size_t prefix : {0, 5})
+            {
+                std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
+                view_wt_huff mapped, copied;
+                {
+                    sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+                    in.seekg(prefix);
+                    mapped.load(in);
+                    ASSERT_TRUE(in);
+                }
+                {
+                    std::ifstream in(file, std::ios::binary);
+                    in.seekg(prefix);
+                    copied.load(in);
+                }
+                std::remove(file.c_str());
+                check_wt(text, mapped);
+                check_wt(text, copied);
+                std::ostringstream a;
+                mapped.serialize(a);
+                EXPECT_EQ(ref_out.str(), a.str());
+                view_wt_huff copy(mapped);
+                view_wt_huff moved(std::move(mapped));
+                mapped = view_wt_huff();
+                check_wt(text, copy);
+                check_wt(text, moved);
+            }
+        }
+    }
 }
 
 } // namespace

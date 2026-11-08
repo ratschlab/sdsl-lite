@@ -763,7 +763,7 @@ public:
         ar(CEREAL_NVP(m_tree));
     }
 
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
     {
         ar(CEREAL_NVP(m_size));
