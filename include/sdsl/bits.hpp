@@ -452,14 +452,16 @@ struct bits_impl
     static constexpr uint64_t read_int_bounded(uint64_t const * word, uint8_t offset = 0, uint8_t const len = 64);
 
     //! Reads a value from a bit position in an array and moved the bit-pointer.
-    static constexpr uint64_t read_int_and_move(uint64_t const *& word, uint8_t & offset, uint8_t const len = 64);
+    template <class WordIterator>
+    static constexpr uint64_t read_int_and_move(WordIterator & word, uint8_t & offset, uint8_t const len = 64);
 
     //! Reads an unary decoded value from a bit position in an array.
     static constexpr uint64_t read_unary(uint64_t const * word, uint8_t offset = 0);
     static constexpr uint64_t read_unary_bounded(uint64_t const * word, uint8_t offset = 0);
 
     //! Reads an unary decoded value from a bit position in an array and moves the bit-pointer.
-    static constexpr uint64_t read_unary_and_move(uint64_t const *& word, uint8_t & offset);
+    template <class WordIterator>
+    static constexpr uint64_t read_unary_and_move(WordIterator & word, uint8_t & offset);
 
     //! Move the bit-pointer (=uint64_t word and offset) `len` to the right.
     /*!\param word   64-bit word part of the bit pointer
@@ -771,7 +773,8 @@ constexpr uint64_t bits_impl<T>::read_int_bounded(uint64_t const * word, uint8_t
 }
 
 template <typename T>
-constexpr uint64_t bits_impl<T>::read_int_and_move(uint64_t const *& word, uint8_t & offset, uint8_t const len)
+template <class WordIterator>
+constexpr uint64_t bits_impl<T>::read_int_and_move(WordIterator & word, uint8_t & offset, uint8_t const len)
 {
     uint64_t w1 = (detail::load_unaligned(word)) >> offset;
     if ((offset = (offset + len)) >= 64)
@@ -829,9 +832,10 @@ constexpr uint64_t bits_impl<T>::read_unary_bounded(uint64_t const * word, uint8
 }
 
 template <typename T>
-constexpr uint64_t bits_impl<T>::read_unary_and_move(uint64_t const *& word, uint8_t & offset)
+template <class WordIterator>
+constexpr uint64_t bits_impl<T>::read_unary_and_move(WordIterator & word, uint8_t & offset)
 {
-    uint64_t w = (*word) >> offset; // temporary variable is good for the performance
+    uint64_t w = detail::load_unaligned(word) >> offset; // temporary variable is good for the performance
     if (w)
     {
         uint8_t r = bits_impl<T>::lo(w);
@@ -843,7 +847,7 @@ constexpr uint64_t bits_impl<T>::read_unary_and_move(uint64_t const *& word, uin
     else
     {
         uint8_t rr = 0;
-        if (0 != (w = *(++word)))
+        if (0 != (w = detail::load_unaligned(++word)))
         {
             rr = bits_impl<T>::lo(w) + 64 - offset;
             offset = (offset + rr + 1) & 0x3F;
@@ -853,7 +857,7 @@ constexpr uint64_t bits_impl<T>::read_unary_and_move(uint64_t const *& word, uin
         else
         {
             uint64_t cnt_1 = 1;
-            while (0 == (w = *(++word)))
+            while (0 == (w = detail::load_unaligned(++word)))
                 ++cnt_1;
             rr = bits_impl<T>::lo(w) + 64 - offset;
             offset = (offset + rr + 1) & 0x3F;

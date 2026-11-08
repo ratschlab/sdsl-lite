@@ -128,8 +128,8 @@ public:
      * \param n Number of values to decode from the bitstring.
      * \param it Iterator to decode the values.
      */
-    template <bool t_sumup, bool t_inc, class t_iter>
-    static uint64_t decode(uint64_t const * data, size_type const start_idx, size_type n, t_iter it = (t_iter) nullptr);
+    template <bool t_sumup, bool t_inc, class t_iter, class t_words>
+    static uint64_t decode(t_words data, size_type const start_idx, size_type n, t_iter it = (t_iter) nullptr);
 
     //! Decode n Elias delta encoded integers beginning at start_idx in the bitstring "data"  and return the sum of
     //! these values.
@@ -617,8 +617,8 @@ inline bool elias_delta<T>::decode(int_vector const & z, int_vector & v)
 }
 
 template <typename T>
-template <bool t_sumup, bool t_inc, class t_iter>
-inline uint64_t elias_delta<T>::decode(uint64_t const * d, size_type const start_idx, size_type n, t_iter it)
+template <bool t_sumup, bool t_inc, class t_iter, class t_words>
+inline uint64_t elias_delta<T>::decode(t_words d, size_type const start_idx, size_type n, t_iter it)
 {
     d += (start_idx >> 6);
     uint64_t value = 0;

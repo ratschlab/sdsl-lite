@@ -49,7 +49,10 @@ struct vlc_vector_trait<32>
  *  \tparam t_dens  Sampling density of pointers into the stream of self-delimiting coded numbers.
  *  \tparam t_width Width of the underlying int_vector for the pointers.
  */
-template <class t_coder = coder::elias_delta<>, uint32_t t_dens = 128, uint8_t t_width = 0>
+template <class t_coder = coder::elias_delta<>,
+          uint32_t t_dens = 128,
+          uint8_t t_width = 0,
+          template <uint8_t> class t_storage = int_vector>
 class vlc_vector
 {
 private:
@@ -66,23 +69,48 @@ public:
     typedef int_vector<>::size_type size_type;
     typedef t_coder coder;
     typedef iv_tag index_category;
-    typedef typename vlc_vector_trait<t_width>::int_vector_type int_vector_type;
+    typedef typename vlc_vector_trait<t_width>::int_vector_type owned_int_vector_type;
+    typedef t_storage<owned_int_vector_type::fixed_int_width> int_vector_type;
 
     static uint32_t const sample_dens = t_dens;
-    bit_vector m_z; // compressed bit stream
+    t_storage<1> m_z; // compressed bit stream
 
 private:
+    template <class, uint32_t, uint8_t, template <uint8_t> class>
+    friend class vlc_vector;
+
     int_vector_type m_sample_pointer;
     size_type m_size = 0; // number of elements
     uint32_t m_sample_dens = t_dens;
 
     void clear()
     {
-        m_z.resize(0);
-        m_z.shrink_to_fit();
+        m_z = t_storage<1>();
         m_size = 0;
-        m_sample_pointer.resize(0);
-        m_sample_pointer.shrink_to_fit();
+        m_sample_pointer = int_vector_type();
+    }
+
+    template <class Source>
+    void init(Source & source);
+    template <uint8_t int_width>
+    void init(int_vector_buffer<int_width> & v_buf);
+
+    // Build with owned storage, then move the arrays into the storage.
+    template <class Source>
+    void build(Source & source)
+    {
+        if constexpr (std::is_same_v<t_storage<1>, bit_vector>)
+        {
+            init(source);
+        }
+        else
+        {
+            vlc_vector<t_coder, t_dens, t_width> owned(source);
+            m_size = owned.m_size;
+            m_sample_dens = owned.m_sample_dens;
+            m_z = t_storage<1>(std::move(owned.m_z));
+            m_sample_pointer = int_vector_type(std::move(owned.m_sample_pointer));
+        }
     }
 
 public:
@@ -97,11 +125,17 @@ public:
      * \pre No two adjacent values should be equal.
      */
     template <class Container>
-    vlc_vector(Container const & c);
+    vlc_vector(Container const & c)
+    {
+        build(c);
+    }
 
     //! Constructor for an int_vector_buffer of unsigned integers.
     template <uint8_t int_width>
-    vlc_vector(int_vector_buffer<int_width> & v_buf);
+    vlc_vector(int_vector_buffer<int_width> & v_buf)
+    {
+        build(v_buf);
+    }
 
     //! The number of elements in the vlc_vector.
     size_type size() const
@@ -156,7 +190,7 @@ public:
     void CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const;
 
     //!\brief Serialise (load) via cereal
-    template <typename archive_t>
+    template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int> = 0>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t & ar);
 
     //! Returns the ith sample of vlc_vector
@@ -166,8 +200,8 @@ public:
     void set_sample_dens(uint32_t const sdens);
 };
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
-inline uint32_t vlc_vector<t_coder, t_dens, t_width>::get_sample_dens() const
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
+inline uint32_t vlc_vector<t_coder, t_dens, t_width, t_storage>::get_sample_dens() const
 {
     if (t_dens == 0)
         return m_sample_dens;
@@ -175,15 +209,15 @@ inline uint32_t vlc_vector<t_coder, t_dens, t_width>::get_sample_dens() const
         return t_dens;
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
-inline void vlc_vector<t_coder, t_dens, t_width>::set_sample_dens(uint32_t const sdens)
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
+inline void vlc_vector<t_coder, t_dens, t_width, t_storage>::set_sample_dens(uint32_t const sdens)
 {
     m_sample_dens = sdens;
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
-inline typename vlc_vector<t_coder, t_dens, t_width>::value_type
-vlc_vector<t_coder, t_dens, t_width>::operator[](size_type const i) const
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
+inline typename vlc_vector<t_coder, t_dens, t_width, t_storage>::value_type
+vlc_vector<t_coder, t_dens, t_width, t_storage>::operator[](size_type const i) const
 {
     assert(i + 1 != 0);
     assert(i < m_size);
@@ -191,9 +225,9 @@ vlc_vector<t_coder, t_dens, t_width>::operator[](size_type const i) const
     return (t_coder::template decode<false, false, int *>(m_z.data(), m_sample_pointer[idx], i - t_dens * idx + 1)) - 1;
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
 template <class Container>
-vlc_vector<t_coder, t_dens, t_width>::vlc_vector(Container const & c)
+void vlc_vector<t_coder, t_dens, t_width, t_storage>::init(Container & c)
 {
     clear(); // clear bit_vectors
 
@@ -231,9 +265,9 @@ vlc_vector<t_coder, t_dens, t_width>::vlc_vector(Container const & c)
     m_size = c.size();
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
 template <uint8_t int_width>
-vlc_vector<t_coder, t_dens, t_width>::vlc_vector(int_vector_buffer<int_width> & v_buf)
+void vlc_vector<t_coder, t_dens, t_width, t_storage>::init(int_vector_buffer<int_width> & v_buf)
 {
     clear(); // clear bit_vectors
     size_type n = v_buf.size();
@@ -277,9 +311,9 @@ vlc_vector<t_coder, t_dens, t_width>::vlc_vector(int_vector_buffer<int_width> & 
     m_size = n;
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
 vlc_vector<>::size_type
-vlc_vector<t_coder, t_dens, t_width>::serialize(std::ostream & out, structure_tree_node * v, std::string name) const
+vlc_vector<t_coder, t_dens, t_width, t_storage>::serialize(std::ostream & out, structure_tree_node * v, std::string name) const
 {
     structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
     size_type written_bytes = 0;
@@ -290,26 +324,26 @@ vlc_vector<t_coder, t_dens, t_width>::serialize(std::ostream & out, structure_tr
     return written_bytes;
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
-void vlc_vector<t_coder, t_dens, t_width>::load(std::istream & in)
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
+void vlc_vector<t_coder, t_dens, t_width, t_storage>::load(std::istream & in)
 {
     read_member(m_size, in);
     m_z.load(in);
     m_sample_pointer.load(in);
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
 template <typename archive_t>
-void vlc_vector<t_coder, t_dens, t_width>::CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
+void vlc_vector<t_coder, t_dens, t_width, t_storage>::CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
 {
     ar(CEREAL_NVP(m_size));
     ar(CEREAL_NVP(m_z));
     ar(CEREAL_NVP(m_sample_pointer));
 }
 
-template <class t_coder, uint32_t t_dens, uint8_t t_width>
-template <typename archive_t>
-void vlc_vector<t_coder, t_dens, t_width>::CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
+template <class t_coder, uint32_t t_dens, uint8_t t_width, template <uint8_t> class t_storage>
+template <typename archive_t, std::enable_if_t<!std::is_base_of_v<std::istream, archive_t>, int>>
+void vlc_vector<t_coder, t_dens, t_width, t_storage>::CEREAL_LOAD_FUNCTION_NAME(archive_t & ar)
 {
     ar(CEREAL_NVP(m_size));
     ar(CEREAL_NVP(m_z));

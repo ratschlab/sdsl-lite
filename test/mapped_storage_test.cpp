@@ -12,6 +12,7 @@
 #include <sdsl/rank_support_v5.hpp>
 #include <sdsl/rank_support_v.hpp>
 #include <sdsl/select_support_mcl.hpp>
+#include <sdsl/vlc_vector.hpp>
 #include <sdsl/wt_huff.hpp>
 #include <sdsl/shared_mapper.hpp>
 
@@ -373,6 +374,78 @@ TEST_F(mapped_storage_test, wt_huff_view_storage)
             }
         }
     }
+}
+
+// Load an integer vector type with view storage from a mapped and a plain
+// stream at several byte offsets. Its serialization must equal that of `Owned`.
+template <class Vector, class Owned>
+void check_int_vector_storage(std::string const & file, std::vector<uint64_t> const & values)
+{
+    Vector built(values);
+    std::ostringstream ref_out, built_out;
+    Owned(values).serialize(ref_out);
+    built.serialize(built_out);
+    ASSERT_EQ(ref_out.str(), built_out.str());
+    auto check = [&](Vector const & v) {
+        ASSERT_EQ(values.size(), v.size());
+        for (size_t i = 0; i < values.size(); ++i)
+            ASSERT_EQ(values[i], v[i]);
+    };
+    check(built);
+    for (size_t prefix : {0, 1, 4, 8})
+    {
+        std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
+        Vector mapped, copied;
+        {
+            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            mapped.load(in);
+            ASSERT_TRUE(in);
+            ASSERT_EQ(prefix + ref_out.str().size(), static_cast<size_t>(in.tellg()));
+        }
+        {
+            std::ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            copied.load(in);
+        }
+        std::remove(file.c_str());
+        check(mapped);
+        check(copied);
+        std::ostringstream a;
+        mapped.serialize(a);
+        EXPECT_EQ(ref_out.str(), a.str());
+        Vector copy(mapped);
+        Vector moved(std::move(mapped));
+        mapped = Vector();
+        check(copy);
+        check(moved);
+    }
+}
+
+template <class Check>
+void for_each_values(Check check)
+{
+    std::mt19937_64 rng(11);
+    for (size_t size : {0, 1, 127, 128, 129, 10000})
+    {
+        for (int bits : {1, 7, 40, 63})
+        {
+            std::vector<uint64_t> values(size);
+            for (auto & x : values)
+                x = rng() >> (64 - bits);
+            check(values);
+        }
+    }
+}
+
+TEST_F(mapped_storage_test, vlc_view_storage)
+{
+    for_each_values([&](std::vector<uint64_t> const & values) {
+        using coder = sdsl::coder::elias_delta<>;
+        check_int_vector_storage<sdsl::vlc_vector<coder, 128, 0, packed_vector_view>, sdsl::vlc_vector<>>(file, values);
+        check_int_vector_storage<sdsl::vlc_vector<coder, 16, 0, packed_vector_view>, sdsl::vlc_vector<coder, 16>>(
+            file, values);
+    });
 }
 
 } // namespace
