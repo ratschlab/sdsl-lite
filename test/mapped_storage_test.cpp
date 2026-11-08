@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include <sdsl/bit_vector_il.hpp>
 #include <sdsl/packed_vector_view.hpp>
 #include <sdsl/rank_support_v5.hpp>
 #include <sdsl/select_support_mcl.hpp>
@@ -214,6 +215,84 @@ TEST_F(mapped_storage_test, rank_v5_view_storage)
         check_support_storage<R1, sdsl::rank_support_v5<1, 1>>(file, bits, check_rank<R1, V>);
         check_support_storage<R0, sdsl::rank_support_v5<0, 1>>(file, bits, check_rank<R0, V>);
     });
+}
+
+// Check access, rank and select of a compressed bit vector type.
+template <class BV>
+void check_bit_vector(sdsl::bit_vector const & bits, BV const & bv)
+{
+    ASSERT_EQ(bits.size(), bv.size());
+    typename BV::rank_1_type rank1(&bv);
+    typename BV::select_1_type select1(&bv);
+    typename BV::select_0_type select0(&bv);
+    uint64_t ones = 0;
+    for (uint64_t i = 0; i < bits.size(); ++i)
+    {
+        ASSERT_EQ(ones, rank1(i));
+        ASSERT_EQ(bits[i], bv[i]);
+        if (bits[i])
+            ASSERT_EQ(i, select1(++ones));
+        else
+            ASSERT_EQ(i, select0(i + 1 - ones));
+        if (i + 64 <= bits.size())
+            ASSERT_EQ(bits.get_int(i, 64), bv.get_int(i, 64));
+    }
+    ASSERT_EQ(ones, rank1(bits.size()));
+}
+
+// Load a compressed bit vector with view storage from a mapped and a plain
+// stream at several byte offsets. Its serialization must equal that of `Owned`.
+template <class BV, class Owned>
+void check_bit_vector_storage(std::string const & file, sdsl::bit_vector const & bits)
+{
+    BV built(bits);
+    std::ostringstream ref_out;
+    Owned(bits).serialize(ref_out);
+    std::ostringstream built_out;
+    built.serialize(built_out);
+    ASSERT_EQ(ref_out.str(), built_out.str());
+    check_bit_vector(bits, built);
+    for (size_t prefix : {0, 3, 8})
+    {
+        std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
+        BV mapped, copied;
+        {
+            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            mapped.load(in);
+            ASSERT_TRUE(in);
+            ASSERT_EQ(prefix + ref_out.str().size(), static_cast<size_t>(in.tellg()));
+        }
+        {
+            std::ifstream in(file, std::ios::binary);
+            in.seekg(prefix);
+            copied.load(in);
+        }
+        std::remove(file.c_str());
+        check_bit_vector(bits, mapped);
+        check_bit_vector(bits, copied);
+        std::ostringstream a, b;
+        mapped.serialize(a);
+        copied.serialize(b);
+        EXPECT_EQ(ref_out.str(), a.str());
+        EXPECT_EQ(ref_out.str(), b.str());
+        BV copy(mapped);
+        BV moved(std::move(mapped));
+        mapped = BV();
+        check_bit_vector(bits, copy);
+        check_bit_vector(bits, moved);
+    }
+}
+
+TEST_F(mapped_storage_test, il_view_storage)
+{
+    for_each_bits([&](sdsl::bit_vector const & bits) {
+        check_bit_vector_storage<sdsl::bit_vector_il<512, packed_vector_view>, sdsl::bit_vector_il<512>>(file, bits);
+        check_bit_vector_storage<sdsl::bit_vector_il<4096, packed_vector_view>, sdsl::bit_vector_il<4096>>(file, bits);
+    });
+    // Rank samples are only stored above 64Ki blocks.
+    auto const bits = random_bits(5'000'000, 0.3, 7);
+    check_bit_vector_storage<sdsl::bit_vector_il<64, packed_vector_view>, sdsl::bit_vector_il<64>>(file, bits);
 }
 
 } // namespace
