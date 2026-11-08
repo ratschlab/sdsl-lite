@@ -39,7 +39,7 @@ namespace sdsl
  *                                 bit_vector for speed.
  * \tparam t_default_max_levels    Maximum number of levels to use.
  */
-template <typename t_bv = bit_vector, int t_default_max_levels = 64>
+template <typename t_bv = bit_vector, int t_default_max_levels = 64, template <uint8_t> class t_storage = int_vector>
 class dac_vector_dp
 {
     static_assert(t_default_max_levels > 0, "invalid max level count");
@@ -62,7 +62,7 @@ private:
     bit_vector m_overflow_tmp;
     overflow_bv m_overflow;
     overflow_bv_rank1 m_overflow_rank;
-    std::vector<int_vector<>> m_data;
+    std::vector<t_storage<0>> m_data;
     std::vector<size_t> m_offsets;
 
     template <typename Container>
@@ -102,8 +102,7 @@ private:
             }
         }
 
-        auto & data = m_data[level];
-        data = int_vector<>(n - overflows);
+        int_vector<> data(n - overflows);
 
         size_t idx_data = 0, idx_recurse = 0;
         int_vector<> recurse(overflows, 0, max_msb + 1);
@@ -119,6 +118,7 @@ private:
             }
         }
         util::bit_compress(data);
+        m_data[level] = t_storage<0>(std::move(data));
         assert(idx_data == n - overflows);
         assert(idx_recurse == overflows);
 

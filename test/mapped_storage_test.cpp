@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <sdsl/bit_vector_il.hpp>
+#include <sdsl/dac_vector_dp.hpp>
 #include <sdsl/packed_vector_view.hpp>
 #include <sdsl/rank_support_v5.hpp>
 #include <sdsl/rank_support_v.hpp>
@@ -309,10 +310,12 @@ TEST_F(mapped_storage_test, rank_v_view_storage)
     });
 }
 
-using view_wt_huff = sdsl::wt_huff<packed_vector_view<1>,
-                                   sdsl::rank_support_v<1, 1, packed_vector_view<1>, packed_vector_view>,
-                                   sdsl::select_support_mcl<1, 1, packed_vector_view<1>, packed_vector_view>,
-                                   sdsl::select_support_mcl<0, 1, packed_vector_view<1>, packed_vector_view>>;
+using view_wt_huff = sdsl::wt_huff<packed_vector_view<1>>;
+static_assert(std::is_same_v<view_wt_huff,
+                             sdsl::wt_huff<packed_vector_view<1>,
+                                           sdsl::rank_support_v<1, 1, packed_vector_view<1>, packed_vector_view>,
+                                           sdsl::select_support_mcl<1, 1, packed_vector_view<1>, packed_vector_view>,
+                                           sdsl::select_support_mcl<0, 1, packed_vector_view<1>, packed_vector_view>>>);
 
 template <class WT>
 void check_wt(sdsl::int_vector<8> const & text, WT const & wt)
@@ -445,6 +448,16 @@ TEST_F(mapped_storage_test, vlc_view_storage)
         check_int_vector_storage<sdsl::vlc_vector<coder, 128, 0, packed_vector_view>, sdsl::vlc_vector<>>(file, values);
         check_int_vector_storage<sdsl::vlc_vector<coder, 16, 0, packed_vector_view>, sdsl::vlc_vector<coder, 16>>(
             file, values);
+    });
+}
+
+TEST_F(mapped_storage_test, dac_dp_view_storage)
+{
+    for_each_values([&](std::vector<uint64_t> const & values) {
+        check_int_vector_storage<sdsl::dac_vector_dp<packed_vector_view<1>, 64, packed_vector_view>,
+                                 sdsl::dac_vector_dp<>>(file, values);
+        check_int_vector_storage<sdsl::dac_vector_dp<sdsl::bit_vector, 2, packed_vector_view>,
+                                 sdsl::dac_vector_dp<sdsl::bit_vector, 2>>(file, values);
     });
 }
 

@@ -36,6 +36,11 @@ class packed_vector_view : public std::ranges::view_interface<packed_vector_view
     uint8_t width_ = Width ? Width : 64;
 
 public:
+    // View-backed supports, as int_vector names its owned ones.
+    typedef rank_support_v<1, 1, packed_vector_view, sdsl::packed_vector_view> rank_1_type;
+    typedef rank_support_v<0, 1, packed_vector_view, sdsl::packed_vector_view> rank_0_type;
+    typedef select_support_mcl<1, 1, packed_vector_view, sdsl::packed_vector_view> select_1_type;
+    typedef select_support_mcl<0, 1, packed_vector_view, sdsl::packed_vector_view> select_0_type;
     using size_type = uint64_t;
     using value_type = uint64_t;
     using difference_type = ptrdiff_t;
