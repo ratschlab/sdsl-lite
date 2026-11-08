@@ -54,7 +54,7 @@ template <class t_int_vector>
 class int_vector_reference;
 template <uint8_t, uint8_t>
 class rank_support_v;
-template <uint8_t, uint8_t, class>
+template <uint8_t, uint8_t, class, template <uint8_t> class = int_vector>
 class select_support_mcl;
 
 namespace coder

@@ -22,6 +22,8 @@
 #include <sdsl/int_vector.hpp>
 #include <sdsl/io.hpp>
 #include <sdsl/iterators.hpp>
+#include <memory>
+#include <span>
 #include <sdsl/sdsl_concepts.hpp>
 #include <sdsl/select_support_mcl.hpp>
 #include <sdsl/structure_tree.hpp>
@@ -35,13 +37,15 @@ namespace sdsl
 template <uint8_t t_b = 1,
           class t_hi_bit_vector = bit_vector,
           class t_select_1 = typename t_hi_bit_vector::select_1_type,
-          class t_select_0 = typename t_hi_bit_vector::select_0_type>
+          class t_select_0 = typename t_hi_bit_vector::select_0_type,
+          class t_low_vector = int_vector<>>
 class rank_support_sd; // in sd_vector
 // forward declaration needed for friend declaration
 template <uint8_t t_b = 1,
           class t_hi_bit_vector = bit_vector,
           class t_select_1 = typename t_hi_bit_vector::select_1_type,
-          class t_select_0 = typename t_hi_bit_vector::select_0_type>
+          class t_select_0 = typename t_hi_bit_vector::select_0_type,
+          class t_low_vector = int_vector<>>
 class select_support_sd; // in sd_vector
 
 //! Class for in-place construction of sd_vector from a strictly increasing sequence
@@ -49,7 +53,7 @@ class select_support_sd; // in sd_vector
  */
 class sd_vector_builder
 {
-    template <typename, typename, typename>
+    template <typename, typename, typename, typename>
     friend class sd_vector;
 
 public:
@@ -130,7 +134,8 @@ public:
  */
 template <class t_hi_bit_vector = bit_vector,
           class t_select_1 = typename t_hi_bit_vector::select_1_type,
-          class t_select_0 = typename t_hi_bit_vector::select_0_type>
+          class t_select_0 = typename t_hi_bit_vector::select_0_type,
+          class t_low_vector = int_vector<>>
 class sd_vector
 {
 public:
@@ -143,21 +148,57 @@ public:
     typedef t_select_0 select_0_support_type;
     typedef t_select_1 select_1_support_type;
 
-    typedef rank_support_sd<0, t_hi_bit_vector, select_1_support_type, select_0_support_type> rank_0_type;
-    typedef rank_support_sd<1, t_hi_bit_vector, select_1_support_type, select_0_support_type> rank_1_type;
-    typedef select_support_sd<0, t_hi_bit_vector, select_1_support_type, select_0_support_type> select_0_type;
-    typedef select_support_sd<1, t_hi_bit_vector, select_1_support_type, select_0_support_type> select_1_type;
+    typedef rank_support_sd<0, t_hi_bit_vector, select_1_support_type, select_0_support_type, t_low_vector> rank_0_type;
+    typedef rank_support_sd<1, t_hi_bit_vector, select_1_support_type, select_0_support_type, t_low_vector> rank_1_type;
+    typedef select_support_sd<0, t_hi_bit_vector, select_1_support_type, select_0_support_type, t_low_vector> select_0_type;
+    typedef select_support_sd<1, t_hi_bit_vector, select_1_support_type, select_0_support_type, t_low_vector> select_1_type;
 
     typedef t_hi_bit_vector hi_bit_vector_type;
 
 private:
+    template <class, class, class, class>
+    friend class sd_vector;
+
+    static constexpr bool is_native = std::is_same_v<t_low_vector, int_vector<>>;
+    struct shared_tag
+    {};
+
+    // Build the native vector, then let views share its low and high arrays.
+    // Members are initialized in place and the select samples are transferred.
+    template <class Owned>
+    sd_vector(shared_tag, Owned && owned) :
+        sd_vector(shared_tag{},
+                  owned,
+                  std::make_shared<std::pair<int_vector<>, bit_vector> const>(std::move(owned.m_low),
+                                                                              std::move(owned.m_high)))
+    {}
+
+    template <class Owned>
+    sd_vector(shared_tag, Owned & owned, std::shared_ptr<std::pair<int_vector<>, bit_vector> const> const & arrays) :
+        m_size(owned.m_size),
+        m_wl(owned.m_wl),
+        m_low(shared_view<t_low_vector>(arrays, arrays->first)),
+        m_high(shared_view<hi_bit_vector_type>(arrays, arrays->second)),
+        m_high_1_select(std::move(owned.m_high_1_select), &m_high),
+        m_high_0_select(std::move(owned.m_high_0_select), &m_high)
+    {}
+
+    template <class View, class Values>
+    static View shared_view(std::shared_ptr<void const> const & owner, Values const & values)
+    {
+        return View(View::from_bytes(owner,
+                                     std::as_bytes(std::span(values.data(), values.bit_capacity() / 64)),
+                                     values.bit_size(),
+                                     values.width()));
+    }
+
     // we need this variables to represent the m ones of the original bit vector of size n
     size_type m_size = 0; // length of the original bit vector
     uint8_t m_wl = 0;     // log n - log m, where n is the length of the original bit vector
     // and m is the number of ones in the bit vector, wl is the abbreviation
     // for ,,width (of) low (part)''
 
-    int_vector<> m_low;                    // vector for the least significant bits of the positions of the m ones
+    t_low_vector m_low;                    // vector for the least significant bits of the positions of the m ones
     hi_bit_vector_type m_high;             // bit vector that represents the most significant bit in permuted order
     select_1_support_type m_high_1_select; // select support for the ones in m_high
     select_0_support_type m_high_0_select; // select support for the zeros in m_high
@@ -165,7 +206,7 @@ private:
 public:
     uint8_t const & wl = m_wl;
     hi_bit_vector_type const & high = m_high;
-    int_vector<> const & low = m_low;
+    t_low_vector const & low = m_low;
     select_1_support_type const & high_1_select = m_high_1_select;
     select_0_support_type const & high_0_select = m_high_0_select;
 
@@ -215,7 +256,10 @@ public:
         *this = std::move(sd);
     }
 
-    sd_vector(bit_vector const & bv)
+    sd_vector(bit_vector const & bv) requires(!is_native) : sd_vector(shared_tag{}, sd_vector<>(bv))
+    {}
+
+    sd_vector(bit_vector const & bv) requires(is_native)
     {
         m_size = bv.size();
         size_type m = util::cnt_one_bits(bv);
@@ -257,7 +301,11 @@ public:
     }
 
     template <class t_itr>
-    sd_vector(t_itr const begin, t_itr const end)
+    sd_vector(t_itr const begin, t_itr const end) requires(!is_native) : sd_vector(shared_tag{}, sd_vector<>(begin, end))
+    {}
+
+    template <class t_itr>
+    sd_vector(t_itr const begin, t_itr const end) requires(is_native)
     {
         if (begin == end)
         {
@@ -298,7 +346,10 @@ public:
         util::init_support(m_high_0_select, &m_high);
     }
 
-    sd_vector(sd_vector_builder & builder)
+    sd_vector(sd_vector_builder & builder) requires(!is_native) : sd_vector(shared_tag{}, sd_vector<>(builder))
+    {}
+
+    sd_vector(sd_vector_builder & builder) requires(is_native)
     {
         if (builder.items() != builder.capacity())
         {
@@ -527,14 +578,14 @@ struct rank_support_sd_trait<0>
  *  \tparam t_select_1      Type of the select structure which is used to select ones in HI.
  *  \tparam t_select_0      Type of the select structure which is used to select zeros in HI.
  */
-template <uint8_t t_b, class t_hi_bit_vector, class t_select_1, class t_select_0>
+template <uint8_t t_b, class t_hi_bit_vector, class t_select_1, class t_select_0, class t_low_vector>
 class rank_support_sd
 {
     static_assert(t_b == 1u or t_b == 0u, "rank_support_sd: bit pattern must be `0` or `1`");
 
 public:
     typedef bit_vector::size_type size_type;
-    typedef sd_vector<t_hi_bit_vector, t_select_1, t_select_0> bit_vector_type;
+    typedef sd_vector<t_hi_bit_vector, t_select_1, t_select_0, t_low_vector> bit_vector_type;
     enum
     {
         bit_pat = t_b
@@ -673,12 +724,12 @@ struct select_support_sd_trait<0, t_sd_vec>
  *  \tparam t_select_1      Type of the select structure which is used to select ones in HI.
  *  \tparam t_select_0      Type of the select structure which is used to select zeros in HI.
  */
-template <uint8_t t_b, class t_hi_bit_vector, class t_select_1, class t_select_0>
+template <uint8_t t_b, class t_hi_bit_vector, class t_select_1, class t_select_0, class t_low_vector>
 class select_support_sd
 {
 public:
     typedef bit_vector::size_type size_type;
-    typedef sd_vector<t_hi_bit_vector, t_select_1, t_select_0> bit_vector_type;
+    typedef sd_vector<t_hi_bit_vector, t_select_1, t_select_0, t_low_vector> bit_vector_type;
     enum
     {
         bit_pat = t_b

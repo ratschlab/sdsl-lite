@@ -96,7 +96,7 @@ public:
     }
     uint64_t size() const
     {
-        return bits_ / width_;
+        return bits_ / width();
     }
     uint64_t bit_size() const
     {
@@ -108,7 +108,7 @@ public:
     }
     uint8_t width() const
     {
-        return width_;
+        return Width ? Width : width_;
     }
     std::span<std::byte const> bytes() const
     {
@@ -130,7 +130,7 @@ public:
     uint64_t operator[](uint64_t i) const
     {
         assert(i < size());
-        return get_int(i * width_, width_);
+        return get_int(i * width(), width());
     }
     vector_type to_owned() const
     {

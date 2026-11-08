@@ -64,7 +64,7 @@ namespace sdsl
  *
  * @ingroup select_support_group
  */
-template <uint8_t t_b = 1, uint8_t t_pat_len = 1, class Vector = bit_vector>
+template <uint8_t t_b = 1, uint8_t t_pat_len = 1, class Vector = bit_vector, template <uint8_t> class Storage>
 class select_support_mcl : public select_support_base<Vector>
 {
 protected:
@@ -74,6 +74,8 @@ public:
     using base_type::vv;
     using size_type = typename base_type::size_type;
 private:
+    template <uint8_t, uint8_t, class, template <uint8_t> class>
+    friend class select_support_mcl;
     static_assert(t_b == 1u or t_b == 0u or t_b == 10u or t_b == 11u,
                   "select_support_mcl: bit pattern must be `0`,`1`,`10`, `01`, or `11`");
     static_assert(t_pat_len == 1u or t_pat_len == 2u, "select_support_mcl: bit pattern length must be 1 or 2");
@@ -94,8 +96,8 @@ private:
         m_logn2 = 0,     // \f$ log^2(size) \f$
         m_logn4 = 0;     // \f$ log^4(size) \f$
     // entry i of m_superblock equals the answer to select_1(B,i*4096)
-    int_vector<0> m_superblock;
-    bit_vector m_miniblock;
+    Storage<0> m_superblock;
+    Storage<1> m_miniblock;
     int_vector<0> * m_block = nullptr;
     std::shared_ptr<mmap_context> m_mmap_context;
     int_vector<0> m_block_offset;
@@ -103,14 +105,32 @@ private:
     size_type m_arg_cnt = 0;
     inline size_type miniblock_size(size_type sb_idx) const;
     inline uint64_t miniblock_value(size_type sb_idx, size_type idx) const;
-    void copy(select_support_mcl<t_b, t_pat_len, Vector> const & ss);
+    void copy(select_support_mcl<t_b, t_pat_len, Vector, Storage> const & ss);
     void initData();
     void init_fast(Vector const * v = nullptr);
 
 public:
     explicit select_support_mcl(Vector const * v = nullptr);
-    select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector> const & ss);
-    select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector> && ss);
+    // Transfer existing samples without rebuilding their select index.
+    template <class OtherVector>
+    select_support_mcl(select_support_mcl<t_b, t_pat_len, OtherVector> && ss, Vector const * v) : base_type(v)
+    {
+        m_logn = ss.m_logn;
+        m_logn2 = ss.m_logn2;
+        m_logn4 = ss.m_logn4;
+        m_arg_cnt = ss.m_arg_cnt;
+        if (!ss.m_superblock.empty())
+            m_superblock = Storage<0>(std::move(ss.m_superblock));
+        if (!ss.m_miniblock.empty())
+            m_miniblock = Storage<1>(std::move(ss.m_miniblock));
+        m_block = std::exchange(ss.m_block, nullptr);
+        m_mmap_context = std::move(ss.m_mmap_context);
+        m_block_offset = std::move(ss.m_block_offset);
+        m_block_width = std::move(ss.m_block_width);
+    }
+
+    select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector, Storage> const & ss);
+    select_support_mcl(select_support_mcl<t_b, t_pat_len, Vector, Storage> && ss);
     ~select_support_mcl();
     void init_slow(Vector const * v = nullptr);
     //! Select function
@@ -120,9 +140,9 @@ public:
     size_type serialize(std::ostream & out, structure_tree_node * v = nullptr, std::string name = "") const;
     void load(std::istream & in, Vector const * v = nullptr);
     void set_vector(Vector const * v = nullptr);
-    select_support_mcl<t_b, t_pat_len, Vector> & operator=(select_support_mcl const & ss);
-    select_support_mcl<t_b, t_pat_len, Vector> & operator=(select_support_mcl &&);
-    void swap(select_support_mcl<t_b, t_pat_len, Vector> & ss);
+    select_support_mcl<t_b, t_pat_len, Vector, Storage> & operator=(select_support_mcl const & ss);
+    select_support_mcl<t_b, t_pat_len, Vector, Storage> & operator=(select_support_mcl &&);
+    void swap(select_support_mcl<t_b, t_pat_len, Vector, Storage> & ss);
     template <typename archive_t>
     void CEREAL_SAVE_FUNCTION_NAME(archive_t & ar) const
     {
@@ -188,9 +208,12 @@ public:
     }
 };
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector>::select_support_mcl(Vector const * f_v) : base_type(f_v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage>::select_support_mcl(Vector const * f_v) : base_type(f_v)
 {
+    if constexpr (!std::is_same_v<Storage<0>, int_vector<0>>)
+        if (!f_v)
+            return;
     if (t_pat_len > 1 or (vv != nullptr and vv->size() < 100000))
         init_slow(vv);
     else
@@ -198,20 +221,20 @@ select_support_mcl<t_b, t_pat_len, Vector>::select_support_mcl(Vector const * f_
     return;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector>::select_support_mcl(select_support_mcl const & ss) : base_type(ss.m_v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage>::select_support_mcl(select_support_mcl const & ss) : base_type(ss.m_v)
 {
     copy(ss);
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector>::select_support_mcl(select_support_mcl && ss) : base_type(ss.m_v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage>::select_support_mcl(select_support_mcl && ss) : base_type(ss.m_v)
 {
     *this = std::move(ss);
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector> & select_support_mcl<t_b, t_pat_len, Vector>::operator=(select_support_mcl const & ss)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage> & select_support_mcl<t_b, t_pat_len, Vector, Storage>::operator=(select_support_mcl const & ss)
 {
     if (this != &ss)
     {
@@ -220,8 +243,8 @@ select_support_mcl<t_b, t_pat_len, Vector> & select_support_mcl<t_b, t_pat_len, 
     return *this;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector> & select_support_mcl<t_b, t_pat_len, Vector>::operator=(select_support_mcl && ss)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage> & select_support_mcl<t_b, t_pat_len, Vector, Storage>::operator=(select_support_mcl && ss)
 {
     if (this != &ss)
     {
@@ -244,8 +267,8 @@ select_support_mcl<t_b, t_pat_len, Vector> & select_support_mcl<t_b, t_pat_len, 
     return *this;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::swap(select_support_mcl & ss)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::swap(select_support_mcl & ss)
 {
     std::swap(m_logn, ss.m_logn);
     std::swap(m_logn2, ss.m_logn2);
@@ -259,8 +282,8 @@ void select_support_mcl<t_b, t_pat_len, Vector>::swap(select_support_mcl & ss)
     std::swap(m_arg_cnt, ss.m_arg_cnt);
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::copy(select_support_mcl<t_b, t_pat_len, Vector> const & ss)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::copy(select_support_mcl<t_b, t_pat_len, Vector, Storage> const & ss)
 {
     m_logn = ss.m_logn;             // copy log n
     m_logn2 = ss.m_logn2;           // copy (logn)^2
@@ -287,14 +310,14 @@ void select_support_mcl<t_b, t_pat_len, Vector>::copy(select_support_mcl<t_b, t_
     }
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-inline auto select_support_mcl<t_b, t_pat_len, Vector>::miniblock_size(size_type sb_idx) const -> size_type
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+inline auto select_support_mcl<t_b, t_pat_len, Vector, Storage>::miniblock_size(size_type sb_idx) const -> size_type
 {
     return (m_miniblock.size() and !m_miniblock[sb_idx]) ? 4096 : 64;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-inline uint64_t select_support_mcl<t_b, t_pat_len, Vector>::miniblock_value(size_type sb_idx, size_type idx) const
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+inline uint64_t select_support_mcl<t_b, t_pat_len, Vector, Storage>::miniblock_value(size_type sb_idx, size_type idx) const
 {
     if (m_block != nullptr)
     {
@@ -312,15 +335,23 @@ inline uint64_t select_support_mcl<t_b, t_pat_len, Vector>::miniblock_value(size
     return bits::read_int(data + (bit_idx >> 6), static_cast<uint8_t>(bit_idx & 0x3F), width);
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-select_support_mcl<t_b, t_pat_len, Vector>::~select_support_mcl()
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+select_support_mcl<t_b, t_pat_len, Vector, Storage>::~select_support_mcl()
 {
     delete[] m_block;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::init_slow(Vector const * v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::init_slow(Vector const * v)
 {
+    if constexpr (!std::is_same_v<Storage<0>, int_vector<0>>)
+    {
+        select_support_mcl<t_b, t_pat_len, Vector> owned;
+        owned.init_slow(v);
+        *this = select_support_mcl(std::move(owned), v);
+    }
+    else
+    {
     set_vector(v);
     initData();
     if (m_v == nullptr)
@@ -381,11 +412,20 @@ void select_support_mcl<t_b, t_pat_len, Vector>::init_slow(Vector const * v)
             }
         }
     }
+    }
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::init_fast(Vector const * v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::init_fast(Vector const * v)
 {
+    if constexpr (!std::is_same_v<Storage<0>, int_vector<0>>)
+    {
+        select_support_mcl<t_b, t_pat_len, Vector> owned;
+        owned.init_fast(v);
+        *this = select_support_mcl(std::move(owned), v);
+    }
+    else
+    {
     set_vector(v);
     initData();
     if (m_v == nullptr)
@@ -481,10 +521,11 @@ void select_support_mcl<t_b, t_pat_len, Vector>::init_fast(Vector const * v)
             }
         }
     }
+    }
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-inline auto select_support_mcl<t_b, t_pat_len, Vector>::select(size_type i) const -> size_type
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+inline auto select_support_mcl<t_b, t_pat_len, Vector, Storage>::select(size_type i) const -> size_type
 {
     assert(i > 0 and i <= m_arg_cnt);
 
@@ -540,14 +581,14 @@ inline auto select_support_mcl<t_b, t_pat_len, Vector>::select(size_type i) cons
     }
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-inline auto select_support_mcl<t_b, t_pat_len, Vector>::operator()(size_type i) const -> size_type
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+inline auto select_support_mcl<t_b, t_pat_len, Vector, Storage>::operator()(size_type i) const -> size_type
 {
     return select(i);
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::initData()
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::initData()
 {
     m_arg_cnt = 0;
     if (nullptr == m_v)
@@ -560,7 +601,7 @@ void select_support_mcl<t_b, t_pat_len, Vector>::initData()
         m_logn2 = m_logn * m_logn;
         m_logn4 = m_logn2 * m_logn2;
     }
-    m_miniblock = bit_vector();
+    m_miniblock = Storage<1>();
     m_mmap_context.reset();
     m_block_offset = int_vector<0>();
     m_block_width = int_vector<8>();
@@ -568,14 +609,14 @@ void select_support_mcl<t_b, t_pat_len, Vector>::initData()
     m_block = nullptr;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::set_vector(Vector const * v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::set_vector(Vector const * v)
 {
     m_v = v;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-auto select_support_mcl<t_b, t_pat_len, Vector>::serialize(std::ostream & out, structure_tree_node * v, std::string name) const
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+auto select_support_mcl<t_b, t_pat_len, Vector, Storage>::serialize(std::ostream & out, structure_tree_node * v, std::string name) const
     -> size_type
 {
     structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
@@ -637,8 +678,8 @@ auto select_support_mcl<t_b, t_pat_len, Vector>::serialize(std::ostream & out, s
     return written_bytes;
 }
 
-template <uint8_t t_b, uint8_t t_pat_len, class Vector>
-void select_support_mcl<t_b, t_pat_len, Vector>::load(std::istream & in, Vector const * v)
+template <uint8_t t_b, uint8_t t_pat_len, class Vector, template <uint8_t> class Storage>
+void select_support_mcl<t_b, t_pat_len, Vector, Storage>::load(std::istream & in, Vector const * v)
 {
     set_vector(v);
     initData();
