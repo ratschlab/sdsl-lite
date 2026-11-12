@@ -847,15 +847,6 @@ public:
         m_v = v;
     }
 
-    select_support_rrr & operator=(select_support_rrr const & rs)
-    {
-        if (this != &rs)
-        {
-            set_vector(rs.m_v);
-        }
-        return *this;
-    }
-
     void swap(select_support_rrr &)
     {}
 
