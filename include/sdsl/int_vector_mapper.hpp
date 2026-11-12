@@ -192,6 +192,16 @@ public:
         }
 
         m_file_size_bytes = util::file_size(m_file_name);
+        // int_vector reads whole 64-bit words, and serialize writes them.
+        uint64_t const header_bytes = static_cast<uint64_t>(m_data_offset);
+        uint64_t const payload_bytes = ((size_in_bits + 63) >> 6) << 3;
+        if (!is_plain
+            && (size_in_bits > UINT64_MAX - 63 || m_file_size_bytes < header_bytes
+                || m_file_size_bytes - header_bytes < payload_bytes))
+        {
+            throw std::runtime_error("int_vector_mapper: file " + m_file_name
+                                     + " is shorter than the size in its header.");
+        }
 
         if (is_plain)
         {

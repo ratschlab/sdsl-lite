@@ -440,6 +440,84 @@ TEST_F(int_vector_mapper_test, read_only_views_release_os_descriptors)
     sdsl::remove(file);
 }
 
+TEST_F(int_vector_mapper_test, missing_plain_file_is_rejected)
+{
+    std::string const file = temp_dir + "/int_vector_mapper_missing_plain";
+    sdsl::remove(file);
+    EXPECT_THROW((sdsl::int_vector_mapper<8, std::ios_base::in>(file, true)), std::runtime_error);
+    EXPECT_FALSE(sdsl::is_ram_file(file) ? sdsl::ram_fs::exists(file) : std::ifstream(file).good());
+}
+
+TEST_F(int_vector_mapper_test, header_larger_than_file_is_rejected)
+{
+    std::string const file = temp_dir + "/int_vector_mapper_truncated";
+    {
+        // The header claims 1 MiB of payload, but the file holds 16 bytes.
+        sdsl::osfstream out(file, std::ios::binary | std::ios::trunc | std::ios::out);
+        sdsl::int_vector<8>::write_header(uint64_t{1} << 23, 8, out);
+        uint64_t const payload[2] = {~uint64_t{0}, ~uint64_t{0}};
+        out.write(reinterpret_cast<char const *>(payload), sizeof(payload));
+    }
+    EXPECT_THROW((sdsl::int_vector_mapper<8, std::ios_base::in>(file)), std::runtime_error);
+    {
+        // The header claims 9 bytes, which int_vector stores in two whole words.
+        sdsl::osfstream out(file, std::ios::binary | std::ios::trunc | std::ios::out);
+        sdsl::int_vector<8>::write_header(72, 8, out);
+        uint8_t const payload[9] = {};
+        out.write(reinterpret_cast<char const *>(payload), sizeof(payload));
+    }
+    EXPECT_THROW((sdsl::int_vector_mapper<8, std::ios_base::in>(file)), std::runtime_error);
+    sdsl::remove(file);
+}
+
+TEST_F(int_vector_mapper_test, read_only_mappings_release_os_descriptors)
+{
+    if (sdsl::is_ram_file(temp_dir))
+        GTEST_SKIP() << "Descriptor reuse requires a disk file";
+    auto const file = temp_dir + "/mapper_read_only_descriptor";
+    ASSERT_TRUE(sdsl::store_to_file(sdsl::int_vector<64>(8, 7), file));
+    int const before = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(before, 0);
+    ::close(before);
+    using mapper_type = sdsl::int_vector_mapper<64, std::ios_base::in>;
+    std::vector<mapper_type> mappers;
+    for (size_t i = 0; i < 64; ++i)
+        mappers.emplace_back(file);
+    int const reused = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(reused, 0);
+    EXPECT_EQ(before, reused);
+    for (auto const & mapper : mappers)
+        EXPECT_EQ(7u, mapper[7]);
+    mappers.clear();
+    // Releasing a mapping must not close a descriptor reused by another file.
+    EXPECT_EQ(0, ::close(reused));
+    sdsl::remove(file);
+}
+
+TEST_F(int_vector_mapper_test, writable_mappings_keep_os_descriptors)
+{
+    if (sdsl::is_ram_file(temp_dir))
+        GTEST_SKIP() << "Descriptor reuse requires a disk file";
+    auto const file = temp_dir + "/mapper_writable_descriptor";
+    ASSERT_TRUE(sdsl::store_to_file(sdsl::int_vector<64>(8, 7), file));
+    int const before = ::open(file.c_str(), O_RDONLY);
+    ASSERT_GE(before, 0);
+    ::close(before);
+    {
+        sdsl::int_vector_mapper<64> mapper(file);
+        int const next = ::open(file.c_str(), O_RDONLY);
+        ASSERT_GE(next, 0);
+        // The mapper still holds the lowest free descriptor.
+        EXPECT_NE(before, next);
+        ::close(next);
+        mapper[0] = 9;
+    }
+    sdsl::int_vector<64> stored;
+    ASSERT_TRUE(sdsl::load_from_file(stored, file));
+    EXPECT_EQ(9u, stored[0]);
+    sdsl::remove(file);
+}
+
 TEST_F(int_vector_mapper_test, read_only_delete_on_close_survives_moves)
 {
     using mapper_type = sdsl::int_vector_mapper<64, std::ios_base::in>;

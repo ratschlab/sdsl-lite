@@ -29,22 +29,29 @@
  *     - replace std::vectors by int_vectors
  *     - add support for rank0
  *     - added naive implementation of method get_int
- *     - TODO: added a naive implementation of select
+ *     - added the initial implementation of select
  */
 #ifndef INCLUDED_SDSL_HYB_VECTOR
 #define INCLUDED_SDSL_HYB_VECTOR
 
 #include <algorithm>
+#include <bit>
 #include <assert.h>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <span>
-#include <ranges>
 #include <stdint.h>
 #include <stdio.h>
 #include <string>
+#include <span>
+#include <ranges>
+#include <type_traits>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
+#include <sdsl/bit_vector_helper.hpp>
 #include <sdsl/bits.hpp>
 #include <sdsl/cereal.hpp>
 #include <sdsl/int_vector.hpp>
@@ -90,11 +97,24 @@ public:
     friend class select_support_hyb<0, k_sblock_rate>;
 
 private:
-    static uint32_t const k_block_size;
-    static constexpr uint32_t k_block_bytes = 32;
-    static uint32_t const k_sblock_header_size;
-    static uint32_t const k_sblock_size;
-    static uint32_t const k_hblock_rate;
+    static constexpr uint32_t k_block_size = 256;
+    static constexpr uint32_t k_block_bytes = k_block_size / 8;
+    static constexpr uint32_t k_sblock_prefix_size = 2 * sizeof(uint32_t);
+    static constexpr uint32_t k_sblock_header_size = k_sblock_prefix_size + sizeof(uint16_t) * k_sblock_rate;
+    static constexpr uint32_t k_sblock_size = k_block_size * k_sblock_rate;
+    // A hyperblock spans at most 2^31 bits and a whole number of superblocks.
+    static constexpr uint32_t k_hblock_rate = (uint32_t{1} << 31) / k_block_size / k_sblock_rate * k_sblock_rate;
+    // A superblock header starts with a 30-bit payload offset relative to its hyperblock; bit 31 marks a
+    // superblock whose blocks are all zeros or all ones.
+    static constexpr uint32_t k_relative_offset_bits = 30;
+    static constexpr uint32_t k_uniform_mask = uint32_t{1} << 31;
+    // A 16-bit block descriptor holds the block population (0 to k_block_size) in its low bits, then a special
+    // bit, then the payload size in bytes.
+    static constexpr uint32_t k_population_bits = std::bit_width(k_block_size);
+    static constexpr uint32_t k_population_mask = bits::lo_set[k_population_bits];
+    static constexpr uint32_t k_special_bit_shift = k_population_bits;
+    static constexpr uint32_t k_special_bit_mask = uint32_t{1} << k_special_bit_shift;
+    static constexpr uint32_t k_payload_size_shift = k_special_bit_shift + 1;
 
     size_type m_size = 0;           // original bitvector size
     int_vector<8> m_trunk;          // body of encoded blocks
@@ -217,29 +237,31 @@ public:
             size_type block_end = block_beg + k_block_size;
             size_type sblock_id = block_id / k_sblock_rate;
             size_type hblock_id = block_id / k_hblock_rate;
+            std::span<uint8_t> header{&m_sblock_header[sblock_id * k_sblock_header_size],
+                                     k_sblock_header_size};
 
             // Update hblock header.
             if (!(block_id % k_hblock_rate))
             {
-                m_hblock_header[2 * hblock_id] = trunk_ptr;
-                m_hblock_header[2 * hblock_id + 1] = tot_rank;
+                auto [payload_offset, ones_before] = hyperblock_header(hblock_id);
+                payload_offset = trunk_ptr;
+                ones_before = tot_rank;
             }
 
             // Update sblock header.
             if (!(block_id % k_sblock_rate))
             {
-                uint8_t * ptr = ((uint8_t *)m_sblock_header.data()) + k_sblock_header_size * sblock_id;
-                uint32_t const sblock_trunk_ptr = trunk_ptr - m_hblock_header[2 * hblock_id];
-                uint32_t const sblock_rank = tot_rank - m_hblock_header[2 * hblock_id + 1];
-                std::memcpy(ptr, &sblock_trunk_ptr, sizeof(sblock_trunk_ptr));
-                std::memcpy(ptr + 4, &sblock_rank, sizeof(sblock_rank));
+                auto [payload_offset, ones_before] = hyperblock_header(hblock_id);
+                detail::write_unaligned<uint32_t>(header, trunk_ptr - payload_offset);
+                detail::write_unaligned<uint32_t>(header, tot_rank - ones_before, 1);
 
                 // If the sblock is uniform, flip the bit.
                 if (sblock_id && (!sblock_ones || sblock_ones == k_sblock_size))
                 {
-                    ptr -= k_sblock_header_size;
-                    uint32_t const flagged_trunk_ptr = detail::load_unaligned<uint32_t>(static_cast<void const *>(ptr)) | 0x80000000;
-                    std::memcpy(ptr, &flagged_trunk_ptr, sizeof(flagged_trunk_ptr));
+                    std::span<uint8_t> previous{&m_sblock_header[(sblock_id - 1) * k_sblock_header_size],
+                                               k_sblock_header_size};
+                    auto packed = detail::read_unaligned<uint32_t>(previous);
+                    detail::write_unaligned(previous, packed | k_uniform_mask);
                 }
 
                 // Reset the number of ones in sblock.
@@ -292,13 +314,9 @@ public:
             uint32_t zeros = k_block_size - ones;
 
             // Store block popcount.
-            uint16_t * header_ptr16 =
-                (uint16_t *)(((uint8_t *)m_sblock_header.data()) + sblock_id * k_sblock_header_size + 8
-                             + (block_id % k_sblock_rate) * 2);
-
-            (*header_ptr16) = ones;
+            uint16_t descriptor = ones;
             if (ones == k_block_size)
-                (*header_ptr16) |= 0x200;
+                descriptor |= k_special_bit_mask;
 
             if (0 < ones && ones < k_block_size)
             { // non uniform block
@@ -309,7 +327,7 @@ public:
                 if (k_block_bytes <= best_enc_size)
                 {
                     // Use plain encoding.
-                    (*header_ptr16) |= (k_block_bytes << 10);
+                    descriptor |= (k_block_bytes << k_payload_size_shift);
 
                     // Copy original 256 bits from bv into trunk.
                     if (block_end <= m_size)
@@ -339,8 +357,8 @@ public:
                     {
 
                         // Use runs encoding.
-                        (*header_ptr16) |= (runs_enc_size << 10);
-                        (*header_ptr16) |= (bv[block_beg] << 9);
+                        descriptor |= (runs_enc_size << k_payload_size_shift);
+                        descriptor |= (bv[block_beg] << k_special_bit_shift);
 
                         if (block_end <= m_size)
                         {
@@ -385,9 +403,9 @@ public:
                     {
                         // Use minority encoding.
                         // Update sblock header.
-                        (*header_ptr16) |= (minority_enc_size << 10);
+                        descriptor |= (minority_enc_size << k_payload_size_shift);
                         if (ones < zeros)
-                            (*header_ptr16) |= 0x200;
+                            descriptor |= k_special_bit_mask;
                         uint8_t keybit = (ones < zeros);
 
                         // Find positions of 1-bits, fast.
@@ -419,6 +437,9 @@ public:
                 }
             }
 
+            detail::write_unaligned(header, descriptor,
+                                    k_sblock_prefix_size / sizeof(descriptor) + block_id % k_sblock_rate);
+
             // Update global rank.
             tot_rank += ones;
             sblock_ones += ones;
@@ -427,63 +448,178 @@ public:
     }
 
 private:
-    template <typename T>
-    static T read_unaligned(std::span<uint8_t const> data, size_type index = 0)
+    struct superblock_view
     {
-        return detail::load_unaligned<T>(static_cast<void const *>(data.data() + sizeof(T) * index));
+        uint32_t relative_offset;
+        uint32_t relative_ones;
+        bool uniform;
+        std::span<uint8_t const> descriptors;
+    };
+
+    superblock_view superblock_header(size_type sblock) const
+    {
+        std::span<uint8_t const> bytes{&m_sblock_header[sblock * k_sblock_header_size],
+                                      k_sblock_header_size};
+        auto packed = detail::read_unaligned<uint32_t>(bytes);
+        return {static_cast<uint32_t>(packed & bits::lo_set[k_relative_offset_bits]),
+                detail::read_unaligned<uint32_t>(bytes, 1),
+                (packed & k_uniform_mask) != 0, bytes.subspan(k_sblock_prefix_size)};
     }
 
-    // Access uses a zero-based position, rank a prefix length, and select a zero-based occurrence index.
-    enum class block_query
+    template <typename T>
+    struct hyperblock_reference
     {
-        access,
-        rank,
-        select
+        T & payload_offset;
+        T & ones_before;
     };
 
-    enum query_bit : uint8_t
+    hyperblock_reference<uint64_t> hyperblock_header(size_type hblock)
     {
-        zero = 0,
-        one = 1,
-        none = 2
+        return {m_hblock_header[2 * hblock], m_hblock_header[2 * hblock + 1]};
+    }
+
+    hyperblock_reference<uint64_t const> hyperblock_header(size_type hblock) const
+    {
+        return {m_hblock_header[2 * hblock], m_hblock_header[2 * hblock + 1]};
+    }
+
+    template <typename T>
+    struct block_descriptor
+    {
+        T payload_bytes;
+        T ones;
+        // First run's bit for run encoding; minority bit for position encoding.
+        using bit_type = std::conditional_t<std::is_integral_v<T>, bool, T>;
+        bit_type special_bit;
     };
+
+    template <typename T>
+    static block_descriptor<T> decode_block(T const & packed)
+    {
+        return {packed >> k_payload_size_shift, packed & k_population_mask,
+                static_cast<typename block_descriptor<T>::bit_type>((packed >> k_special_bit_shift) & 1)};
+    }
+
+#if defined(__AVX2__)
+    // Favor the default rate's shorter reduction; widen only for larger superblocks.
+    static constexpr uint32_t k_descriptor_lanes = k_sblock_rate >= 64 ? 16 : 8;
+    // sum_lanes reads each lane as a signed 16-bit value (PMADDWD).
+    static constexpr uint32_t k_lane_sum_limit = INT16_MAX;
+#else
+    static constexpr uint32_t k_descriptor_lanes = 8;
+    // Lanes accumulate in uint16_t.
+    static constexpr uint32_t k_lane_sum_limit = UINT16_MAX;
+#endif
+    using lanes128 [[gnu::vector_size(16)]] = uint16_t;
+    using lanes256 [[gnu::vector_size(32)]] = uint16_t;
+    using descriptor_vector = std::conditional_t<k_descriptor_lanes == 8, lanes128, lanes256>;
+
+    static uint32_t sum_lanes(descriptor_vector values)
+    {
+#if defined(__AVX2__)
+        // PMADDWD widens and adds lane pairs in one step. A plain loop over the lanes also vectorizes, but with
+        // extra widening shuffles, and made select 3-16% and rank up to 8% slower with GCC 16 and Clang 23.
+        // Each lane sums at most 64 nine-bit populations, fitting signed 16 bits.
+        __m128i sums;
+        if constexpr (k_descriptor_lanes == 16)
+        {
+            auto pairs = _mm256_madd_epi16(std::bit_cast<__m256i>(values), _mm256_set1_epi16(1));
+            sums = _mm_add_epi32(_mm256_castsi256_si128(pairs), _mm256_extracti128_si256(pairs, 1));
+        }
+        else
+            sums = _mm_madd_epi16(std::bit_cast<__m128i>(values), _mm_set1_epi16(1));
+        sums = _mm_add_epi32(sums, _mm_srli_si128(sums, 8));
+        sums = _mm_add_epi32(sums, _mm_srli_si128(sums, 4));
+        return static_cast<uint32_t>(_mm_cvtsi128_si32(sums));
+#else
+        uint32_t sum = 0;
+        for (uint32_t lane = 0; lane < k_descriptor_lanes; ++lane)
+            sum += values[lane];
+        return sum;
+#endif
+    }
+
+    struct block_location
+    {
+        size_type offset;
+        size_type ones_before;
+        block_descriptor<uint32_t> descriptor;
+    };
+
+    [[gnu::always_inline]] // Specialize the locator for the fields its caller uses.
+    block_location locate_block(size_type block_id) const
+    {
+        auto sblock = block_id / k_sblock_rate;
+        auto hblock = block_id / k_hblock_rate;
+        auto [relative_offset, relative_ones, uniform, descriptors] = superblock_header(sblock);
+        auto [base_offset, base_ones] = hyperblock_header(hblock);
+        block_location result{base_offset + relative_offset, base_ones + relative_ones, {}};
+        auto preceding = block_id % k_sblock_rate;
+        if (uniform)
+        {
+            result.descriptor = decode_block<uint32_t>(detail::read_unaligned<uint16_t>(descriptors));
+            result.ones_before += result.descriptor.ones * preceding;
+            return result;
+        }
+        if constexpr (k_sblock_rate >= k_descriptor_lanes && k_sblock_rate <= 1024)
+        {
+            descriptor_vector indices{};
+            for (uint32_t lane = 0; lane < k_descriptor_lanes; ++lane)
+                indices[lane] = lane;
+            descriptor_vector sizes{}, populations{};
+            // Whole chunks only: a load never reads past this superblock's descriptors.
+            constexpr size_type full = k_sblock_rate / k_descriptor_lanes * k_descriptor_lanes;
+            // The queried block is never summed, so a lane sums at most ceil((rate - 1) / lanes) populations.
+            constexpr size_type descriptors_per_lane = (k_sblock_rate + k_descriptor_lanes - 2) / k_descriptor_lanes;
+            static_assert(descriptors_per_lane * k_block_size <= k_lane_sum_limit,
+                          "Descriptor population sums overflow a 16-bit lane.");
+            for (size_type j = 0; j < full; j += k_descriptor_lanes)
+            {
+                descriptor_vector values;
+                assert(2 * j + sizeof(values) <= descriptors.size());
+                std::memcpy(&values, &descriptors[2 * j], sizeof(values));
+                values &=
+                    static_cast<descriptor_vector>(indices + static_cast<uint16_t>(j) < static_cast<uint16_t>(preceding));
+                auto decoded = decode_block(values);
+                sizes += decoded.payload_bytes;
+                populations += decoded.ones;
+            }
+            // For a rate that is not a multiple of the lane count, add one more chunk that
+            // ends at the last descriptor, masking off the lanes the loop already summed.
+            if constexpr (full != k_sblock_rate)
+            {
+                constexpr size_type last = k_sblock_rate - k_descriptor_lanes;
+                descriptor_vector values;
+                static_assert(2 * last + sizeof(values) == 2 * k_sblock_rate);
+                std::memcpy(&values, &descriptors[2 * last], sizeof(values));
+                auto lane = indices + static_cast<uint16_t>(last);
+                values &= static_cast<descriptor_vector>((lane >= static_cast<uint16_t>(full))
+                                                         & (lane < static_cast<uint16_t>(preceding)));
+                auto decoded = decode_block(values);
+                sizes += decoded.payload_bytes;
+                populations += decoded.ones;
+            }
+            result.offset += sum_lanes(sizes);
+            result.ones_before += sum_lanes(populations);
+        }
+        else
+        {
+            // Preserve the general-rate interface without partial SIMD loads
+            // or overflow in the bounded 16-bit lane accumulators.
+            for (size_type j = 0; j < preceding; ++j)
+            {
+                auto decoded = decode_block<uint32_t>(detail::read_unaligned<uint16_t>(descriptors, j));
+                result.offset += decoded.payload_bytes;
+                result.ones_before += decoded.ones;
+            }
+        }
+        result.descriptor = decode_block<uint32_t>(detail::read_unaligned<uint16_t>(descriptors, preceding));
+        return result;
+    }
 
     static bool access_plain(std::span<uint8_t const, k_block_bytes> data, uint8_t position)
     {
-        return read_unaligned<uint64_t>(data, position / 64) & (uint64_t{1} << (position % 64));
-    }
-
-    static uint32_t rank_plain(std::span<uint8_t const, k_block_bytes> data, uint32_t prefix_length)
-    {
-        uint8_t last_position = prefix_length - 1;
-        uint32_t accumulated = 0;
-        for (uint32_t word = 0; word < k_block_bytes / 8; ++word)
-        {
-            uint64_t value = read_unaligned<uint64_t>(data, word);
-            if (last_position < 64)
-                return accumulated + bits::cnt(value << (63 - last_position));
-            accumulated += bits::cnt(value);
-            last_position -= 64;
-        }
-        assert(false && "Invalid hybrid block population");
-        return 0;
-    }
-
-    template <bool t_bit>
-    static uint32_t select_plain(std::span<uint8_t const, k_block_bytes> data, uint8_t select_index)
-    {
-        for (uint32_t word = 0; word < k_block_bytes / 8; ++word)
-        {
-            uint64_t value = read_unaligned<uint64_t>(data, word);
-            if constexpr (!t_bit)
-                value = ~value;
-            auto count = bits::cnt(value);
-            if (select_index < count)
-                return 64 * word + bits::sel(value, select_index + 1);
-            select_index -= count;
-        }
-        assert(false && "Invalid hybrid block population");
-        return 0;
+        return detail::access_in_words(data, position);
     }
 
     static bool access_minority(std::span<uint8_t const> positions, bool minority_bit, uint8_t position)
@@ -491,29 +627,6 @@ private:
         return (std::ranges::find(positions, position) == positions.end()) ^ minority_bit;
     }
 
-    static uint32_t rank_minority(std::span<uint8_t const> positions, bool minority_bit, uint32_t prefix_length)
-    {
-        uint8_t last_position = prefix_length - 1;
-        uint32_t seen = std::ranges::count_if(positions, [&](uint8_t position) { return position <= last_position; });
-        return minority_bit ? seen : prefix_length - seen;
-    }
-
-    template <bool t_bit>
-    static uint32_t select_minority(std::span<uint8_t const> positions, bool minority_bit, uint8_t select_index)
-    {
-        if (t_bit == minority_bit)
-            return positions[select_index];
-        auto indices = std::views::iota(uint8_t{0}, uint8_t(positions.size()));
-        // Skip the j preceding minority positions.
-        uint32_t seen = std::ranges::count_if(indices, [&](uint8_t j) {
-            uint8_t majorities_before = positions[j] - j;
-            return majorities_before <= select_index;
-        });
-        return select_index + seen;
-    }
-
-    // Run payloads omit the final two endpoints; the total population determines
-    // the remaining run of each bit. Stored endpoints are inclusive.
     static bool access_runs(std::span<uint8_t const> ends, uint32_t ones, bool first_bit, uint8_t position)
     {
         uint32_t matched_before = 0;
@@ -534,170 +647,113 @@ private:
         return (position < start || position >= start + length) ^ first_bit;
     }
 
-    static uint32_t rank_runs(std::span<uint8_t const> ends, uint32_t ones, bool first_bit, uint32_t prefix_length)
-    {
-        uint32_t matched_before = 0;
-        auto result = [&](uint32_t start, uint32_t end) {
-            uint32_t prefix = matched_before + std::min(prefix_length, end) - std::min(prefix_length, start);
-            return first_bit ? prefix : prefix_length - prefix;
-        };
-        uint32_t run = 0;
-        uint32_t num_ends = std::min<uint32_t>(ends.size(), k_block_bytes);
-        for (; run < num_ends; run += 2)
-        {
-            uint32_t start = run ? ends[run - 1] + 1 : 0;
-            uint32_t end = ends[run] + 1;
-            if (prefix_length <= end)
-                return result(start, end);
-            matched_before += end - start;
-        }
-        uint32_t population = first_bit ? ones : k_block_size - ones;
-        uint32_t length = population - matched_before;
-        uint32_t start = run == num_ends ? ends[num_ends - 1] + 1 : k_block_size - length;
-        return result(start, start + length);
-    }
-
-    template <bool t_bit>
-    static uint32_t select_runs(std::span<uint8_t const> ends, uint32_t ones, bool first_bit, uint8_t select_index)
-    {
-        uint32_t matched_before = 0;
-        uint32_t run = first_bit != t_bit;
-        uint32_t num_ends = std::min<uint32_t>(ends.size(), k_block_bytes);
-        for (; run < num_ends; run += 2)
-        {
-            uint32_t start = run ? ends[run - 1] + 1 : 0;
-            uint32_t end = ends[run] + 1;
-            if (select_index < matched_before + end - start)
-                return start + select_index - matched_before;
-            matched_before += end - start;
-        }
-        uint32_t population = t_bit ? ones : k_block_size - ones;
-        uint32_t length = population - matched_before;
-        uint32_t start = run == num_ends ? ends[num_ends - 1] + 1 : k_block_size - length;
-        return start + select_index - matched_before;
-    }
-
-    template <block_query t_query, query_bit t_bit = query_bit::none>
 #if __has_cpp_attribute(gnu::always_inline)
-    [[gnu::always_inline]] // Keep block decoding inside these hot query paths.
+    [[gnu::always_inline]] // Keep block decoding inside the hot query path.
 #endif
-    uint32_t query_block(size_type offset, uint16_t descriptor, uint32_t target) const
+    bool access_block(size_type offset, block_descriptor<uint32_t> descriptor, uint32_t position) const
     {
-        static_assert(t_query == block_query::access || t_query == block_query::rank || t_query == block_query::select,
-                      "Unsupported hybrid block query");
-        static_assert(t_query == block_query::select
-                          ? t_bit == query_bit::zero || t_bit == query_bit::one
-                          : t_bit == query_bit::none,
-                      "Specify zero or one exactly when selecting");
-        uint32_t encoding_size = descriptor >> 10;
-        uint32_t ones = descriptor & 0x1ff;
+        auto [encoding_size, ones, special_bit] = descriptor;
         uint32_t zeros = k_block_size - ones;
-        bool special_bit = (descriptor >> 9) & 1;
-
-        // At most two runs; their lengths follow from the population.
         if (!encoding_size)
         {
             uint32_t first_run_length = special_bit ? ones : zeros;
-            if constexpr (t_query == block_query::select)
-                return (t_bit == special_bit ? 0 : first_run_length) + target;
-            else if constexpr (t_query == block_query::access)
-                return (target >= first_run_length) ^ special_bit;
-            else if constexpr (t_query == block_query::rank)
-                return special_bit ? std::min(target, first_run_length) : target - std::min(target, first_run_length);
+            return (position >= first_run_length) ^ special_bit;
         }
-
-        std::span<uint8_t const> data{m_trunk.begin() + offset, encoding_size};
-        if constexpr (t_query == block_query::access)
-        {
-            if (encoding_size >= k_block_bytes)
-                return access_plain(data.first<k_block_bytes>(), target);
-            if (encoding_size == std::min(ones, zeros))
-                return access_minority(data, special_bit, target);
-            return access_runs(data, ones, special_bit, target);
-        }
-        else if constexpr (t_query == block_query::rank)
-        {
-            if (encoding_size >= k_block_bytes)
-                return rank_plain(data.first<k_block_bytes>(), target);
-            if (encoding_size == std::min(ones, zeros))
-                return rank_minority(data, special_bit, target);
-            return rank_runs(data, ones, special_bit, target);
-        }
-        else if constexpr (t_query == block_query::select)
-        {
-            if (encoding_size >= k_block_bytes)
-                return select_plain<t_bit>(data.first<k_block_bytes>(), target);
-            if (encoding_size == std::min(ones, zeros))
-                return select_minority<t_bit>(data, special_bit, target);
-            return select_runs<t_bit>(data, ones, special_bit, target);
-        }
+        std::span<uint8_t const> data{&m_trunk[offset], encoding_size};
+        if (encoding_size >= k_block_bytes)
+            return access_plain(data.first<k_block_bytes>(), position);
+        if (encoding_size == std::min(ones, zeros))
+            return access_minority(data, special_bit, position);
+        return access_runs(data, ones, special_bit, position);
     }
 
-    std::span<uint8_t const> superblock_header(size_type sblock) const
+    uint64_t get_int_block(block_location const & location, uint32_t position, uint32_t length) const
     {
-        return {m_sblock_header.begin() + sblock * k_sblock_header_size, k_sblock_header_size};
+        auto [encoding_size, ones, special_bit] = location.descriptor;
+        uint64_t mask = bits::lo_set[length];
+        // The result's low bit represents position, even when the interval crosses a run.
+        auto run_mask = [&](uint32_t start, uint32_t end) {
+            start = std::clamp(start, position, position + length) - position;
+            end = std::clamp(end, position, position + length) - position;
+            return bits::lo_set[end] ^ bits::lo_set[start];
+        };
+        if (!encoding_size)
+        {
+            auto first_end = special_bit ? ones : k_block_size - ones;
+            auto first_run = run_mask(0, first_end);
+            return special_bit ? first_run : first_run ^ mask;
+        }
+        std::span<uint8_t const> data{&m_trunk[location.offset], encoding_size};
+        if (encoding_size >= k_block_bytes)
+        {
+            auto word = position / 64;
+            auto shift = position % 64;
+            auto value = detail::read_unaligned<uint64_t>(data, word) >> shift;
+            if (length > 64 - shift)
+                value |= detail::read_unaligned<uint64_t>(data, word + 1) << (64 - shift);
+            return value & mask;
+        }
+        if (encoding_size == std::min(ones, k_block_size - ones))
+        {
+            uint64_t value = special_bit ? 0 : mask;
+            for (auto bit_position : data)
+            {
+                if (bit_position >= position + length)
+                    break;
+                if (bit_position >= position)
+                    value ^= uint64_t{1} << (bit_position - position);
+            }
+            return value;
+        }
+        uint64_t first_runs = 0;
+        uint32_t matched_before = 0, run = 0;
+        for (; run < data.size(); run += 2)
+        {
+            uint32_t start = run ? data[run - 1] + 1 : 0;
+            uint32_t end = data[run] + 1;
+            first_runs |= run_mask(start, end);
+            matched_before += end - start;
+            if (end >= position + length)
+                return special_bit ? first_runs : first_runs ^ mask;
+        }
+        // The final two run endings are implicit; one of those runs has the first bit.
+        uint32_t population = special_bit ? ones : k_block_size - ones;
+        uint32_t remaining = population - matched_before;
+        uint32_t start = run == data.size() ? data.back() + 1 : k_block_size - remaining;
+        first_runs |= run_mask(start, start + remaining);
+        return special_bit ? first_runs : first_runs ^ mask;
     }
 
-    struct block_location
+#if __has_cpp_attribute(gnu::always_inline) && !defined(__clang__)
+    [[gnu::always_inline]] // GCC otherwise outlines this loop after inlining the block decoder.
+#endif
+    uint64_t get_int_blocks(size_type idx, uint8_t len) const
     {
-        size_type offset;
-        size_type ones_before;
-        uint16_t descriptor;
-    };
+        uint64_t value = 0;
+        for (uint32_t copied = 0; copied < len;)
+        {
+            auto position = idx % k_block_size;
+            auto length = std::min<uint32_t>(len - copied, k_block_size - position);
+            value |= get_int_block(locate_block(idx / k_block_size), position, length) << copied;
+            idx += length;
+            copied += length;
+        }
+        return value;
+    }
 
-#if __has_cpp_attribute(gnu::always_inline)
-    [[gnu::always_inline]] // Specialize the locator for the fields its caller uses.
-#endif
-    block_location locate_block(size_type block_id) const
+    uint64_t get_int_short(size_type idx, uint8_t len) const
     {
-        auto sblock = block_id / k_sblock_rate;
-        auto hblock = block_id / k_hblock_rate;
-        auto header = superblock_header(sblock);
-        auto packed = read_unaligned<uint32_t>(header);
-        auto local_rank = read_unaligned<uint32_t>(header, 1);
-        block_location result{m_hblock_header[2 * hblock] + (packed & 0x3fffffff),
-                              m_hblock_header[2 * hblock + 1] + local_rank, 0};
-        header = header.subspan(8);
-        auto preceding = block_id % k_sblock_rate;
-        if (packed & 0x80000000) // Every block in this superblock has the same bit.
+        if (!len)
+            return 0;
+        uint32_t position = idx % k_block_size;
+        auto location = locate_block(idx / k_block_size);
+        uint64_t value = 0;
+        for (uint32_t bit = len; bit > 0; --bit)
         {
-            result.descriptor = read_unaligned<uint16_t>(header);
-            result.ones_before += (result.descriptor & 0x1ff) * preceding;
-            return result;
+            value <<= 1;
+            value |= access_block(location.offset, location.descriptor, position + bit - 1);
         }
-#if defined(__GNUC__) || defined(__clang__)
-        if constexpr (k_sblock_rate == 16)
-        {
-            // Every superblock allocates all sixteen descriptors, including the final one.
-            using lanes_type [[gnu::vector_size(16)]] = uint16_t;
-            auto lo = read_unaligned<lanes_type>(header);
-            auto hi = read_unaligned<lanes_type>(header, 1);
-            lanes_type const indices = {0, 1, 2, 3, 4, 5, 6, 7};
-            lo &= static_cast<lanes_type>(indices < static_cast<uint16_t>(preceding));
-            hi &= static_cast<lanes_type>(indices + 8 < static_cast<uint16_t>(preceding));
-            auto sizes = (lo >> 10) + (hi >> 10);
-            auto populations = (lo & 0x1ff) + (hi & 0x1ff);
-            uint32_t bytes = 0, ones = 0;
-            for (uint32_t j = 0; j < 8; ++j)
-            {
-                bytes += sizes[j];
-                ones += populations[j];
-            }
-            result.offset += bytes;
-            result.ones_before += ones;
-        }
-        else
-#endif
-        {
-            for (size_type j = 0; j < preceding; ++j)
-            {
-                auto descriptor = read_unaligned<uint16_t>(header, j);
-                result.offset += descriptor >> 10;
-                result.ones_before += descriptor & 0x1ff;
-            }
-        }
-        result.descriptor = read_unaligned<uint16_t>(header, preceding);
-        return result;
+        return value;
     }
 
 public:
@@ -709,15 +765,25 @@ public:
      *  \pre idx+len-1 in [0..size()-1]
      *  \pre len in [1..64]
      */
+#if __has_cpp_attribute(gnu::always_inline)
+    [[gnu::always_inline]] // Keep the length dispatch inside the caller.
+#endif
     uint64_t get_int(size_type idx, uint8_t const len = 64) const
     {
-        uint64_t res = 0;
-        for (size_t i = 0; i < len; ++i)
+        assert(len <= 64 && idx <= m_size && len <= m_size - idx);
+        if (len >= 4)
+            return get_int_blocks(idx, len);
+        if (len == 1)
+            return (*this)[idx];
+        if (idx % k_block_size + len <= k_block_size)
+            return get_int_short(idx, len);
+        uint64_t value = 0;
+        for (size_type bit = 0; bit < len; ++bit)
         {
-            res <<= 1;
-            res |= (*this)[idx + len - 1 - i];
+            value <<= 1;
+            value |= (*this)[idx + len - 1 - bit];
         }
-        return res;
+        return value;
     }
 
     //! Accessing the i-th element of the original bitvector
@@ -725,7 +791,7 @@ public:
     {
         assert(i < m_size);
         auto location = locate_block(i / k_block_size);
-        return query_block<block_query::access>(location.offset, location.descriptor, i % k_block_size);
+        return access_block(location.offset, location.descriptor, i % k_block_size);
     }
 
     //! Returns the size of the original bitvector
@@ -796,14 +862,6 @@ public:
     }
 };
 
-template <uint32_t k_sblock_rate>
-uint32_t const hyb_vector<k_sblock_rate>::k_block_size = 256;
-template <uint32_t k_sblock_rate>
-uint32_t const hyb_vector<k_sblock_rate>::k_sblock_header_size = 8 + 2 * k_sblock_rate;
-template <uint32_t k_sblock_rate>
-uint32_t const hyb_vector<k_sblock_rate>::k_sblock_size = 256 * k_sblock_rate;
-template <uint32_t k_sblock_rate>
-uint32_t const hyb_vector<k_sblock_rate>::k_hblock_rate = (1U << 31) / 256 / k_sblock_rate * k_sblock_rate;
 
 template <uint8_t t_bp>
 struct rank_result
@@ -849,6 +907,63 @@ public:
 private:
     bit_vector_type const * m_v;
 
+    static uint32_t rank_plain(std::span<uint8_t const, bit_vector_type::k_block_bytes> data, uint32_t prefix_length)
+    {
+        return detail::rank_in_words(data, prefix_length);
+    }
+
+    static uint32_t rank_minority(std::span<uint8_t const> positions, bool minority_bit, uint32_t prefix_length)
+    {
+        uint32_t seen = std::ranges::count_if(positions, [&](uint8_t position) { return position < prefix_length; });
+        return minority_bit ? seen : prefix_length - seen;
+    }
+
+    static uint32_t rank_runs(std::span<uint8_t const> ends, uint32_t ones, bool first_bit, uint32_t prefix_length)
+    {
+        uint32_t matched_before = 0;
+        auto result = [&](uint32_t start, uint32_t end) {
+            uint32_t prefix = matched_before + std::min(prefix_length, end) - std::min(prefix_length, start);
+            return first_bit ? prefix : prefix_length - prefix;
+        };
+        uint32_t run = 0;
+        uint32_t num_ends = std::min<uint32_t>(ends.size(), bit_vector_type::k_block_bytes);
+        for (; run < num_ends; run += 2)
+        {
+            uint32_t start = run ? ends[run - 1] + 1 : 0;
+            uint32_t end = ends[run] + 1;
+            if (prefix_length <= end)
+                return result(start, end);
+            matched_before += end - start;
+        }
+        uint32_t population = first_bit ? ones : bit_vector_type::k_block_size - ones;
+        uint32_t length = population - matched_before;
+        uint32_t start = run == num_ends ? ends[num_ends - 1] + 1 : bit_vector_type::k_block_size - length;
+        return result(start, start + length);
+    }
+
+#if __has_cpp_attribute(gnu::always_inline)
+    [[gnu::always_inline]] // Keep block decoding inside the hot query path.
+#endif
+    uint32_t rank_block(size_type offset,
+                        typename bit_vector_type::template block_descriptor<uint32_t> descriptor,
+                        uint32_t prefix_length) const
+    {
+        auto [encoding_size, ones, special_bit] = descriptor;
+        uint32_t zeros = bit_vector_type::k_block_size - ones;
+        if (!encoding_size)
+        {
+            uint32_t first_run_length = special_bit ? ones : zeros;
+            return special_bit ? std::min(prefix_length, first_run_length)
+                               : prefix_length - std::min(prefix_length, first_run_length);
+        }
+        std::span<uint8_t const> data{&m_v->m_trunk[offset], encoding_size};
+        if (encoding_size >= bit_vector_type::k_block_bytes)
+            return rank_plain(data.first<bit_vector_type::k_block_bytes>(), prefix_length);
+        if (encoding_size == std::min(ones, zeros))
+            return rank_minority(data, special_bit, prefix_length);
+        return rank_runs(data, ones, special_bit, prefix_length);
+    }
+
 public:
     //! Standard constructor
     explicit rank_support_hyb(bit_vector_type const * v = nullptr)
@@ -868,7 +983,7 @@ public:
 
         auto last_position = i - 1;
         auto location = m_v->locate_block(last_position / bit_vector_type::k_block_size);
-        auto local_rank = m_v->template query_block<bit_vector_type::block_query::rank>(
+        auto local_rank = rank_block(
             location.offset, location.descriptor, last_position % bit_vector_type::k_block_size + 1);
         return rank_result<t_b>::adapt(location.ones_before + local_rank, i);
     }
@@ -938,7 +1053,9 @@ public:
 /*!
  * \tparam t_b            The bit pattern of size one. (so `0` or `1`)
  * \tparam k_sblock_rate  Superblock rate (number of blocks inside superblock)
- * Select queries narrow the search using superblock boundaries.
+ * Select samples occurrence positions to narrow the superblock search, then decodes the selected block.
+ * Samples occupy about size()/128 bits per support and are rebuilt when attaching or loading.
+ * They are not serialized; size_in_bytes therefore excludes this derived memory.
  */
 template <uint8_t t_b, uint32_t k_sblock_rate>
 class select_support_hyb
@@ -958,6 +1075,107 @@ public:
 private:
     bit_vector_type const * m_v;
 
+    // Chiu and Kempa, SEA 2026, Section 4: sample occurrences to bound the search.
+    // The directory is derived state, rebuilt on attachment rather than serialized.
+    static constexpr size_type sample_ratio = 128;
+    size_type m_sample_interval = 1;
+    int_vector<64> m_samples;
+
+    auto populations() const
+    {
+        auto population = [this](size_type sblock)
+        {
+            auto local = m_v->superblock_header(sblock).relative_ones;
+            auto hblock = sblock * k_sblock_rate / bit_vector_type::k_hblock_rate;
+            return rank_result<t_b>::adapt(m_v->hyperblock_header(hblock).ones_before + local,
+                                           sblock * bit_vector_type::k_sblock_size);
+        };
+        return random_access_container(population, (size() - 1) / bit_vector_type::k_sblock_size + 1);
+    }
+
+    void initialize_samples()
+    {
+        if (!m_v || !size())
+        {
+            m_sample_interval = 1;
+            m_samples = int_vector<64>();
+            return;
+        }
+        auto last = m_v->locate_block((size() - 1) / bit_vector_type::k_block_size);
+        size_type total = rank_result<t_b>::adapt(last.ones_before + last.descriptor.ones, size());
+        size_type budget = std::max<size_type>(size() / sample_ratio / 64, 2) - 1;
+        m_sample_interval = std::max<size_type>((total + budget - 1) / budget, 1);
+        size_type count = (total + m_sample_interval - 1) / m_sample_interval;
+        m_samples = int_vector<64>(count + 1);
+        auto prefixes = populations();
+        size_type sblock = 0;
+        for (size_type sample = 0; sample < count; ++sample)
+        {
+            size_type target = sample * m_sample_interval + 1;
+            while (sblock + 1 < prefixes.size() && prefixes[sblock + 1] < target)
+                ++sblock;
+            m_samples[sample] = sblock;
+        }
+        m_samples[count] = prefixes.size() - 1;
+    }
+
+    using descriptor_type = typename bit_vector_type::template block_descriptor<uint32_t>;
+
+    static uint32_t select_plain(std::span<uint8_t const, bit_vector_type::k_block_bytes> data, uint8_t select_index)
+    {
+        return detail::select_in_words<t_b>(data, select_index + 1);
+    }
+
+    static uint32_t select_minority(std::span<uint8_t const> positions, bool minority_bit, uint8_t select_index)
+    {
+        if (t_b == minority_bit)
+            return positions[select_index];
+        auto indices = std::views::iota(uint8_t{0}, uint8_t(positions.size()));
+        // Skip the j preceding minority positions.
+        uint32_t seen = std::ranges::count_if(indices, [&](uint8_t j) { return positions[j] - j <= select_index; });
+        return select_index + seen;
+    }
+
+    static uint32_t select_runs(std::span<uint8_t const> ends, uint32_t ones, bool first_bit, uint8_t select_index)
+    {
+        uint32_t matched_before = 0;
+        uint32_t run = first_bit != t_b;
+        uint32_t num_ends = std::min<uint32_t>(ends.size(), bit_vector_type::k_block_bytes);
+        for (; run < num_ends; run += 2)
+        {
+            uint32_t start = run ? ends[run - 1] + 1 : 0;
+            uint32_t end = ends[run] + 1;
+            if (select_index < matched_before + end - start)
+                return start + select_index - matched_before;
+            matched_before += end - start;
+        }
+        uint32_t population = t_b ? ones : bit_vector_type::k_block_size - ones;
+        uint32_t length = population - matched_before;
+        uint32_t start = run == num_ends ? ends[num_ends - 1] + 1 : bit_vector_type::k_block_size - length;
+        return start + select_index - matched_before;
+    }
+
+#if __has_cpp_attribute(gnu::always_inline)
+    [[gnu::always_inline]] // Keep block decoding inside the hot query path.
+#endif
+    uint32_t select_block(size_type offset, descriptor_type descriptor, uint32_t select_index) const
+    {
+        auto [encoding_size, ones, special_bit] = descriptor;
+        uint32_t zeros = bit_vector_type::k_block_size - ones;
+        if (!encoding_size)
+        {
+            uint32_t first_run_length = special_bit ? ones : zeros;
+            return (t_b == special_bit ? 0 : first_run_length) + select_index;
+        }
+        std::span<uint8_t const> data{&m_v->m_trunk[offset], encoding_size};
+        if (encoding_size >= bit_vector_type::k_block_bytes)
+            return select_plain(data.first<bit_vector_type::k_block_bytes>(), select_index);
+        if (encoding_size == std::min(ones, zeros))
+            return select_minority(data, special_bit, select_index);
+        return select_runs(data, ones, special_bit, select_index);
+    }
+
+
 public:
     //! Standard constructor
     explicit select_support_hyb(bit_vector_type const * v = nullptr)
@@ -973,48 +1191,38 @@ public:
             return 0;
         // The final block is zero-padded, so its descriptor gives its full population.
         auto last = m_v->locate_block((size() - 1) / bit_vector_type::k_block_size);
-        auto total_ones = last.ones_before + (last.descriptor & 0x1ff);
+        auto total_ones = last.ones_before + last.descriptor.ones;
         if (i > rank_result<t_b>::adapt(total_ones, size()))
             return size();
 
-        // Superblock headers contain prefix populations relative to their hyperblock.
-        // Read packed metadata with memcpy because the headers need not be aligned.
-        auto population = [&](size_type sblock)
-        {
-            auto local = m_v->template read_unaligned<uint32_t>(m_v->superblock_header(sblock), 1);
-            auto hblock = sblock * k_sblock_rate / bit_vector_type::k_hblock_rate;
-            return rank_result<t_b>::adapt(m_v->m_hblock_header[2 * hblock + 1] + local,
-                                           sblock * bit_vector_type::k_sblock_size);
-        };
-        auto prefixes = random_access_container(population, (size() - 1) / bit_vector_type::k_sblock_size + 1);
-        auto first = std::ranges::lower_bound(prefixes.begin() + 1, prefixes.end(), i);
+        auto prefixes = populations();
+        size_type sample = (i - 1) / m_sample_interval;
+        auto first = std::ranges::lower_bound(prefixes.begin() + m_samples[sample] + 1,
+                                              prefixes.begin() + m_samples[sample + 1] + 1, i);
         // Prefix zero is below i, so the target superblock precedes the lower bound.
         size_type begin = first - prefixes.begin() - 1;
 
-        i -= population(begin);
+        i -= prefixes[begin];
         size_type base = begin * bit_vector_type::k_sblock_size;
-        auto header = m_v->superblock_header(begin);
-        auto packed = m_v->template read_unaligned<uint32_t>(header);
-        if (packed & 0x80000000) // Uniform superblock.
+        auto [relative_offset, relative_ones, uniform, descriptors] = m_v->superblock_header(begin);
+        if (uniform)
             return base + i - 1;
 
         auto hblock = begin * k_sblock_rate / bit_vector_type::k_hblock_rate;
-        size_type offset = m_v->m_hblock_header[2 * hblock] + (packed & 0x3fffffff);
-        header = header.subspan(8);
-        uint16_t descriptor;
+        size_type offset = m_v->hyperblock_header(hblock).payload_offset + relative_offset;
+        descriptor_type descriptor;
         uint32_t count;
-        for (;; header = header.subspan(2), base += bit_vector_type::k_block_size)
+        for (;; descriptors = descriptors.subspan(2), base += bit_vector_type::k_block_size)
         {
-            descriptor = m_v->template read_unaligned<uint16_t>(header);
-            count = rank_result<t_b>::adapt(descriptor & 0x1ff, bit_vector_type::k_block_size);
+            descriptor = bit_vector_type::template decode_block<uint32_t>(detail::read_unaligned<uint16_t>(descriptors));
+            count = rank_result<t_b>::adapt(descriptor.ones, bit_vector_type::k_block_size);
             if (i <= count)
                 break;
             i -= count;
-            offset += descriptor >> 10;
+            offset += descriptor.payload_bytes;
         }
 
-        constexpr auto bit = t_b ? bit_vector_type::query_bit::one : bit_vector_type::query_bit::zero;
-        return base + m_v->template query_block<bit_vector_type::block_query::select, bit>(offset, descriptor, i - 1);
+        return base + select_block(offset, descriptor, i - 1);
     }
 
     //! Shorthand for select(i)
@@ -1033,16 +1241,7 @@ public:
     void set_vector(bit_vector_type const * v = nullptr)
     {
         m_v = v;
-    }
-
-    //! Assignment operator
-    select_support_hyb & operator=(select_support_hyb const & rs)
-    {
-        if (this != &rs)
-        {
-            set_vector(rs.m_v);
-        }
-        return *this;
+        initialize_samples();
     }
 
     //! Load the data structure from a stream and set the supported vector
@@ -1065,7 +1264,9 @@ public:
 
     template <typename archive_t>
     void CEREAL_LOAD_FUNCTION_NAME(archive_t &)
-    {}
+    {
+        initialize_samples();
+    }
 
     bool operator==(select_support_hyb const & other) const noexcept
     {

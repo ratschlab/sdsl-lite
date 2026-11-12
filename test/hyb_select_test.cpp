@@ -12,7 +12,7 @@ namespace
 {
 
 template <uint32_t rate>
-void check_select(sdsl::bit_vector const & bits)
+void check_queries(sdsl::bit_vector const & bits)
 {
     sdsl::hyb_vector<rate> vector(bits);
     typename sdsl::hyb_vector<rate>::select_0_type select0(&vector);
@@ -37,18 +37,19 @@ void check_select(sdsl::bit_vector const & bits)
 }
 
 template <typename T>
-class hyb_select_test : public ::testing::Test
+class hyb_query_test : public ::testing::Test
 {};
 
 using rates = ::testing::Types<std::integral_constant<uint32_t, 1>,
-                               std::integral_constant<uint32_t, 2>,
-                               std::integral_constant<uint32_t, 4>,
                                std::integral_constant<uint32_t, 15>,
+                               std::integral_constant<uint32_t, 24>,
+                               std::integral_constant<uint32_t, 8>,
                                std::integral_constant<uint32_t, 16>,
+                               std::integral_constant<uint32_t, 32>,
                                std::integral_constant<uint32_t, 64>>;
-TYPED_TEST_SUITE(hyb_select_test, rates, );
+TYPED_TEST_SUITE(hyb_query_test, rates, );
 
-TYPED_TEST(hyb_select_test, block_encodings)
+TYPED_TEST(hyb_query_test, block_encodings)
 {
     // Uniform, two-run, minority, run-length and plain blocks, in both polarities.
     // Their different encoded lengths also leave plain blocks unaligned in the trunk.
@@ -70,10 +71,10 @@ TYPED_TEST(hyb_select_test, block_encodings)
     for (uint64_t block = 0; block < patterns.size(); ++block)
         for (uint64_t i = 0; i < 256; ++i)
             bits[block * 256 + i] = patterns[block][i % patterns[block].size()] == '1';
-    check_select<TypeParam::value>(bits);
+    check_queries<TypeParam::value>(bits);
 }
 
-TYPED_TEST(hyb_select_test, run_counts)
+TYPED_TEST(hyb_query_test, run_counts)
 {
     // Both parities of the final two (implicit) runs, for every encoded run count.
     for (uint32_t runs = 3; runs <= 33; ++runs)
@@ -81,13 +82,13 @@ TYPED_TEST(hyb_select_test, run_counts)
         sdsl::bit_vector bits(256, 0);
         for (uint64_t pos = 0; pos < bits.size(); ++pos)
             bits[pos] = (pos * runs / bits.size()) & 1;
-        check_select<TypeParam::value>(bits);
+        check_queries<TypeParam::value>(bits);
         bits.flip();
-        check_select<TypeParam::value>(bits);
+        check_queries<TypeParam::value>(bits);
     }
 }
 
-TYPED_TEST(hyb_select_test, short_patterns)
+TYPED_TEST(hyb_query_test, short_patterns)
 {
     for (uint64_t size = 0; size <= 8; ++size)
         for (uint64_t pattern = 0; pattern < (uint64_t(1) << size); ++pattern)
@@ -95,11 +96,11 @@ TYPED_TEST(hyb_select_test, short_patterns)
             sdsl::bit_vector bits(size, 0);
             for (uint64_t i = 0; i < size; ++i)
                 bits[i] = (pattern >> i) & 1;
-            check_select<TypeParam::value>(bits);
+            check_queries<TypeParam::value>(bits);
         }
 }
 
-TYPED_TEST(hyb_select_test, boundaries_and_densities)
+TYPED_TEST(hyb_query_test, boundaries_and_densities)
 {
     constexpr uint64_t superblock_size = 256 * TypeParam::value;
     std::mt19937_64 random(42);
@@ -122,76 +123,188 @@ TYPED_TEST(hyb_select_test, boundaries_and_densities)
             sdsl::bit_vector bits(size);
             for (uint64_t i = 0; i < size; ++i)
                 bits[i] = random() % 100 < density;
-            check_select<TypeParam::value>(bits);
+            check_queries<TypeParam::value>(bits);
         }
     }
 }
 
-TYPED_TEST(hyb_select_test, empty_superblocks)
+TYPED_TEST(hyb_query_test, serialization)
+{
+    using vector_type = sdsl::hyb_vector<TypeParam::value>;
+    sdsl::bit_vector bits(7 * 256 + 3, 0);
+    for (uint64_t i = 0; i < bits.size(); ++i)
+        bits[i] = (i % 5) < 2;
+    vector_type vector(bits);
+    std::stringstream stream;
+    vector.serialize(stream);
+    vector_type loaded;
+    loaded.load(static_cast<std::istream &>(stream));
+    typename vector_type::rank_1_type rank1(&loaded);
+    typename vector_type::select_1_type select1(&loaded);
+    uint64_t ones = 0;
+    for (uint64_t i = 0; i < bits.size(); ++i)
+    {
+        ASSERT_EQ(bits[i], loaded[i]);
+        ASSERT_EQ(ones, rank1(i));
+        if (bits[i])
+        {
+            ASSERT_EQ(i, select1(++ones));
+        }
+    }
+    EXPECT_EQ(ones, rank1(bits.size()));
+}
+
+TYPED_TEST(hyb_query_test, empty_superblocks)
 {
     constexpr uint64_t superblock_size = 256 * TypeParam::value;
     sdsl::bit_vector bits(5 * superblock_size, 0);
     // Repeated prefix counts must not move a select query past its occurrence.
     for (uint64_t pos : {superblock_size - 1, superblock_size, 4 * superblock_size})
         bits[pos] = 1;
-    check_select<TypeParam::value>(bits);
+    check_queries<TypeParam::value>(bits);
     bits.flip();
-    check_select<TypeParam::value>(bits);
+    check_queries<TypeParam::value>(bits);
 }
 
-// Based on upstream 709012618b611557a0d03861d0901f5b53a63cf0; also check
-// select and stream round trips through the fork's shared block locator.
 template <uint32_t rate>
-void check_hblock_boundary()
+void check_large_superblock_population()
 {
-    using vector_type = sdsl::hyb_vector<rate>;
-    uint64_t const boundary = uint64_t{1} << 31;
-    uint64_t const begin = boundary - 16 * 256;
-    sdsl::bit_vector bits(boundary + 16 * 256, 0);
-    std::mt19937_64 rng{};
-    for (uint64_t i = begin; i < bits.size(); ++i)
-        bits[i] = rng() & 1;
-
-    vector_type original(bits);
-    std::stringstream stream;
-    original.serialize(stream);
-    vector_type loaded;
-    loaded.load(static_cast<std::istream &>(stream));
-    for (auto const * vector : {&original, &loaded})
-    {
-        typename vector_type::rank_1_type rank1(vector);
-        typename vector_type::rank_0_type rank0(vector);
-        typename vector_type::select_1_type select1(vector);
-        typename vector_type::select_0_type select0(vector);
-        uint64_t ones = 0;
-        for (uint64_t i = begin; i < bits.size(); ++i)
-        {
-            ASSERT_EQ(bits[i], (*vector)[i]) << "i=" << i;
-            ASSERT_EQ(ones, rank1(i)) << "i=" << i;
-            ASSERT_EQ(i - ones, rank0(i)) << "i=" << i;
-            if (bits[i])
-                ASSERT_EQ(i, select1(++ones)) << "i=" << i;
-            else
-                ASSERT_EQ(i, select0(i + 1 - ones)) << "i=" << i;
-        }
-        EXPECT_EQ(ones, rank1(bits.size()));
-        EXPECT_EQ(bits.size() - ones, rank0(bits.size()));
-    }
+    sdsl::bit_vector bits(rate * 256, 1);
+    bits[3] = 0; // Keep the superblock nonuniform so the descriptor sums are exercised.
+    sdsl::hyb_vector<rate> vector(bits);
+    typename sdsl::hyb_vector<rate>::rank_1_type rank1(&vector);
+    typename sdsl::hyb_vector<rate>::rank_0_type rank0(&vector);
+    EXPECT_EQ(bits.size() - 1, rank1(bits.size()));
+    EXPECT_EQ(uint64_t{1}, rank0(bits.size()));
 }
 
-TEST(hyb_select_boundary_test, nondividing_rate)
+TEST(hyb_query_test, large_superblock_population)
 {
-    check_hblock_boundary<15>();
-}
-
-TEST(hyb_select_boundary_test, another_nondividing_rate)
-{
-    check_hblock_boundary<3>();
-}
-
-TEST(hyb_select_boundary_test, default_rate)
-{
-    check_hblock_boundary<16>();
+    check_large_superblock_population<1024>();
+    check_large_superblock_population<1025>();
+    check_large_superblock_population<2048>();
 }
 
 } // namespace
+
+TYPED_TEST(hyb_query_test, get_int_intervals)
+{
+    sdsl::bit_vector bits(2 * TypeParam::value * 256 + 67);
+    std::mt19937_64 random(921);
+    for (uint64_t i = 0; i < bits.size(); ++i)
+    {
+        auto position = i % 256;
+        switch ((i / 256) % 8)
+        {
+            case 0: bits[i] = 0; break;
+            case 1: bits[i] = 1; break;
+            case 2: bits[i] = position >= 83; break;
+            case 3: bits[i] = position == 7 || position == 129 || position == 250; break;
+            case 4: bits[i] = position != 5 && position != 130; break;
+            case 5: bits[i] = (position / 13) % 2; break;
+            case 6: bits[i] = random() % 2; break;
+            case 7: bits[i] = position > 0 && position < 255; break;
+        }
+    }
+    sdsl::hyb_vector<TypeParam::value> vector(bits);
+    for (uint64_t position = 0; position < bits.size(); ++position)
+        for (uint8_t length = 1; length <= 64 && length <= bits.size() - position; ++length)
+            ASSERT_EQ(bits.get_int(position, length), vector.get_int(position, length));
+    EXPECT_EQ(uint64_t{0}, vector.get_int(vector.size(), 0));
+}
+
+TEST(hyb_query_test, get_int_run_counts)
+{
+    for (uint32_t runs = 3; runs <= 33; ++runs)
+    {
+        sdsl::bit_vector bits(256);
+        for (uint64_t position = 0; position < bits.size(); ++position)
+            bits[position] = (position * runs / bits.size()) & 1;
+        for (int polarity = 0; polarity < 2; ++polarity)
+        {
+            sdsl::hyb_vector<> vector(bits);
+            for (uint64_t position = 0; position < bits.size(); ++position)
+                for (uint8_t length = 1; length <= 64 && length <= bits.size() - position; ++length)
+                    ASSERT_EQ(bits.get_int(position, length), vector.get_int(position, length));
+            bits.flip();
+        }
+    }
+}
+
+TEST(hyb_query_test, get_int_uniform_superblocks)
+{
+    for (bool bit : {false, true})
+    {
+        sdsl::bit_vector bits(3 * 4096 + 17, bit);
+        sdsl::hyb_vector<> vector(bits);
+        for (uint64_t position = 0; position < bits.size(); ++position)
+            for (uint8_t length = 1; length <= 64 && length <= bits.size() - position; ++length)
+                ASSERT_EQ(bits.get_int(position, length), vector.get_int(position, length));
+    }
+}
+
+TEST(hyb_select_test, sampled_support_rebinding)
+{
+    sdsl::bit_vector bits(65536, 0);
+    for (uint64_t i = 0; i < bits.size() / 2; ++i)
+        bits[i] = 1;
+    sdsl::hyb_vector<> vector(bits);
+    sdsl::hyb_vector<>::select_1_type ones;
+    sdsl::hyb_vector<>::select_0_type zeros;
+    ones.set_vector(&vector);
+    zeros.set_vector(&vector);
+    EXPECT_EQ(uint64_t{0}, ones(1));
+    EXPECT_EQ(uint64_t{32768}, zeros(1));
+
+    // Same size and populations, but a different directory in the same object.
+    bits.flip();
+    vector = sdsl::hyb_vector<>(bits);
+    ones.set_vector(&vector);
+    zeros.set_vector(&vector);
+    for (uint64_t i = 1; i <= 32768; ++i)
+    {
+        ASSERT_EQ(i + 32767, ones(i));
+        ASSERT_EQ(i - 1, zeros(i));
+    }
+    ones.set_vector();
+    ones.set_vector(&vector);
+    EXPECT_EQ(uint64_t{32768}, ones(1));
+    EXPECT_EQ(vector.size(), ones(32769));
+}
+
+TEST(hyb_select_test, derived_samples_preserve_support_stream)
+{
+    sdsl::bit_vector bits(65539, 0);
+    bits[17] = bits[32768] = bits[65538] = 1;
+    sdsl::hyb_vector<> vector(bits);
+    sdsl::hyb_vector<>::select_1_type ones(&vector);
+    sdsl::hyb_vector<>::select_0_type zeros(&vector);
+    std::stringstream stream;
+    EXPECT_EQ(uint64_t{0}, ones.serialize(stream));
+    EXPECT_EQ(uint64_t{0}, zeros.serialize(stream));
+    stream << "following field";
+
+    sdsl::hyb_vector<>::select_1_type loaded_ones;
+    sdsl::hyb_vector<>::select_0_type loaded_zeros;
+    loaded_ones.load(static_cast<std::istream &>(stream), &vector);
+    loaded_zeros.load(static_cast<std::istream &>(stream), &vector);
+    EXPECT_EQ(uint64_t{17}, loaded_ones(1));
+    EXPECT_EQ(uint64_t{32768}, loaded_ones(2));
+    EXPECT_EQ(uint64_t{65538}, loaded_ones(3));
+    EXPECT_EQ(uint64_t{0}, loaded_zeros(1));
+    EXPECT_EQ(uint64_t{65537}, loaded_zeros(65536));
+    std::string following;
+    std::getline(stream, following);
+    EXPECT_EQ("following field", following);
+}
+
+TEST(hyb_select_test, larger_superblock_rates)
+{
+    sdsl::bit_vector bits(3 * 1024 * 256 + 123, 0);
+    for (uint64_t i = 0; i < bits.size(); ++i)
+        bits[i] = (i / 13) % 2 && (i < 1024 * 256 || i >= 2 * 1024 * 256);
+    check_queries<128>(bits);
+    check_queries<256>(bits);
+    check_queries<512>(bits);
+    check_queries<1024>(bits);
+}
