@@ -1,333 +1,291 @@
-/* sdsl - succinct data structures library
-    Copyright (C) 2014 Simon Gog
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see http://www.gnu.org/licenses/ .
-*/
-// Legacy dynamic-programming DAC representation used by MetaGraph count indexes.
+// Copyright (c) 2026, the SDSL Project Authors.  All rights reserved.
+// Please see the AUTHORS file for details.  Use of this source code is governed
+// by a BSD license that can be found in the LICENSE file.
+/*!\file dac_vector_dp.hpp
+ * \brief dac_vector_dp.hpp contains a variable-length integer vector whose levels are chosen by dynamic programming.
+ */
 #ifndef INCLUDED_SDSL_DAC_VECTOR_DP
 #define INCLUDED_SDSL_DAC_VECTOR_DP
 
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <iosfwd>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <sdsl/bits.hpp>
 #include <sdsl/int_vector.hpp>
-#include <sdsl/int_vector_buffer.hpp>
+#include <sdsl/io.hpp>
 #include <sdsl/iterators.hpp>
-#include <sdsl/rank_support_v5.hpp>
-#include <sdsl/rrr_vector.hpp>
+#include <sdsl/rank_support_v.hpp>
+#include <sdsl/structure_tree.hpp>
+#include <sdsl/util.hpp>
 
 namespace sdsl
 {
-//! A generic immutable space-saving vector class for unsigned integers.
-/*! The values of a dac_vector are immutable after the constructor call.
- *  The ,,escaping'' technique is used to encode values. Bit widths of each
- *  encoding level are chosen optimally via dynamic programming.
- *  \par References
- *       [1] N. Brisaboa and S. Ladra and G. Navarro: ,,DACs: Bringing Direct Access to Variable-Length Codes'',
-             Information Processing and Management (IPM) 2013
+
+//! An immutable vector of unsigned integers stored in levels of increasing width.
+/*! Each value is stored whole in the first level that is wide enough for it.
+ *  A bit per value and level says whether the value continues to the next level,
+ *  and a rank over these bits gives its position there.
+ *  The level widths minimize the total size and are chosen by dynamic programming,
+ *  as for the directly addressable codes in [1].
  *
- * \tparam t_bv                    Bit vector to use for overflow bits. Use
- *                                 rrr_vector<> for maximum compression, and
- *                                 bit_vector for speed.
- * \tparam t_default_max_levels    Maximum number of levels to use.
+ *  \par References
+ *       [1] N. Brisaboa, S. Ladra and G. Navarro: ,,DACs: Bringing direct access to
+ *           variable-length codes'', Information Processing and Management 49(1), 2013.
+ *
+ * \tparam t_bv         Bit vector for the continuation bits, with a rank_1_type.
+ * \tparam t_max_levels Default maximum number of levels.
+ * \tparam t_storage    Storage of the level values, e.g. int_vector or packed_vector_view.
  */
-template <typename t_bv = bit_vector, int t_default_max_levels = 64, template <uint8_t> class t_storage = int_vector>
+template <typename t_bv = bit_vector, int t_max_levels = 64, template <uint8_t> class t_storage = int_vector>
 class dac_vector_dp
 {
-    static_assert(t_default_max_levels > 0, "invalid max level count");
+    static_assert(t_max_levels > 0, "dac_vector_dp: at least one level is needed");
 
 public:
-    typedef typename int_vector<>::value_type value_type;
-    typedef random_access_const_iterator<dac_vector_dp> const_iterator;
-    typedef t_bv overflow_bv;
-    typedef typename t_bv::rank_1_type overflow_bv_rank1;
-    typedef const_iterator iterator;
-    typedef value_type const const_reference;
-    typedef const_reference reference;
-    typedef const_reference * pointer;
-    typedef pointer const const_pointer;
-    typedef int_vector<>::size_type size_type;
-    typedef ptrdiff_t difference_type;
+    using value_type = int_vector<>::value_type;
+    using size_type = int_vector<>::size_type;
+    using difference_type = ptrdiff_t;
+    using const_iterator = random_access_const_iterator<dac_vector_dp>;
+    using iterator = const_iterator;
+    using const_reference = value_type const;
+    using reference = const_reference;
+    using index_category = iv_tag;
+    using rank_type = typename t_bv::rank_1_type;
 
 private:
-    size_t m_size = 0;
-    bit_vector m_overflow_tmp;
-    overflow_bv m_overflow;
-    overflow_bv_rank1 m_overflow_rank;
-    std::vector<t_storage<0>> m_data;
-    std::vector<size_t> m_offsets;
+    // Serialized in this order. The level of a value is found by following its continuation bits.
+    t_bv m_next;                       // continuation bits of all levels, level after level
+    rank_type m_next_rank;             // rank over m_next
+    std::vector<t_storage<0>> m_level; // values that end at each level
+    std::vector<size_t> m_start;       // position of each level's first bit in m_next
+    size_type m_size = 0;              // not serialized: the sum of the level sizes
 
-    template <typename Container>
-    void construct_level(size_t level, size_t overflow_offset, std::vector<int> const & bit_sizes, Container && c)
+    // Estimated bits for one level: its continuation bits and a fixed header and rank overhead.
+    static constexpr double k_level_overhead = 128;
+
+    // Values wider than `low` bits enter the level, and those up to `high` bits end there.
+    // wider[k] counts the values wider than k bits, and wider[0] counts all values.
+    static double level_bits(std::array<uint64_t, 66> const & wider, int low, int high)
     {
-        if (level == bit_sizes.size())
+        return double(high) * (wider[low] - wider[high]) + wider[low] + k_level_overhead;
+    }
+
+    // The widths, in bits, of the widest value each level holds. The last one is the widest value.
+    static std::vector<int> choose_widths(std::array<uint64_t, 66> const & wider, int max_width, int max_levels)
+    {
+        // cost[k][w] = least bits to store the values wider than w bits in at most k levels.
+        // A width of max_width needs no further level.
+        double const inf = std::numeric_limits<double>::max();
+        std::vector<std::vector<double>> cost(max_levels + 1, std::vector<double>(max_width + 1, inf));
+        std::vector<std::vector<int>> next(max_levels + 1, std::vector<int>(max_width + 1, -1));
+        for (int k = 0; k <= max_levels; ++k)
+            cost[k][max_width] = 0;
+        for (int k = 1; k <= max_levels; ++k)
         {
-            assert(c.size() == 0);
-            assert(overflow_offset == m_overflow_tmp.size());
-            // pack overflow bit vector (no-op if t_bv = bit_vector)
-            m_overflow = overflow_bv(std::move(m_overflow_tmp));
-            m_overflow_rank = overflow_bv_rank1(&m_overflow);
-            m_overflow_tmp = bit_vector();
-            return;
-        }
-
-        m_offsets.push_back(overflow_offset);
-        size_t n = c.size();
-
-        // mark elements with < *bit_sizes bits
-        int bits_next = bit_sizes[level];
-        size_t overflows = 0;
-        int max_msb = 0; // max MSB of all values in c
-
-        for (size_t i = 0; i < n; ++i)
-        {
-            int msb = bits::hi(c[i]);
-            max_msb = std::max(max_msb, msb);
-            if (msb >= bits_next)
+            for (int low = 0; low < max_width; ++low)
             {
-                m_overflow_tmp[overflow_offset + i] = 1;
-                overflows++;
-            }
-            else
-            {
-                m_overflow_tmp[overflow_offset + i] = 0;
-            }
-        }
-
-        int_vector<> data(n - overflows);
-
-        size_t idx_data = 0, idx_recurse = 0;
-        int_vector<> recurse(overflows, 0, max_msb + 1);
-        for (size_t i = 0; i < n; ++i)
-        {
-            if (m_overflow_tmp[overflow_offset + i])
-            {
-                recurse[idx_recurse++] = c[i];
-            }
-            else
-            {
-                data[idx_data++] = c[i];
-            }
-        }
-        util::bit_compress(data);
-        m_data[level] = t_storage<0>(std::move(data));
-        assert(idx_data == n - overflows);
-        assert(idx_recurse == overflows);
-
-        construct_level(level + 1, overflow_offset + n, bit_sizes, recurse);
-    }
-
-public:
-    // copy-and-swap
-    dac_vector_dp() = default;
-    dac_vector_dp(dac_vector_dp const & other) :
-        m_size(other.m_size),
-        m_overflow(other.m_overflow),
-        m_overflow_rank(other.m_overflow_rank),
-        m_data(other.m_data),
-        m_offsets(other.m_offsets)
-    {
-        m_overflow_rank.set_vector(&m_overflow);
-    }
-
-    void swap(dac_vector_dp & other)
-    {
-        std::swap(m_size, other.m_size);
-        m_overflow.swap(other.m_overflow);
-        util::swap_support(m_overflow_rank, other.m_overflow_rank, &m_overflow, &other.m_overflow);
-        std::swap(m_data, other.m_data);
-        std::swap(m_offsets, other.m_offsets);
-    }
-
-    dac_vector_dp(dac_vector_dp && other) : dac_vector_dp()
-    {
-        this->swap(other);
-    }
-
-    dac_vector_dp & operator=(dac_vector_dp && other)
-    {
-        this->swap(other);
-        return *this;
-    }
-
-    dac_vector_dp & operator=(dac_vector_dp const & other)
-    {
-        m_size = other.m_size;
-        m_overflow = other.m_overflow;
-        m_overflow_rank = other.m_overflow_rank;
-        m_overflow_rank.set_vector(&m_overflow);
-        m_data = other.m_data;
-        m_offsets = other.m_offsets;
-        return *this;
-    }
-
-    double cost(size_t n, size_t m)
-    {
-        // FIXME(niklasb) this seems to work well for both plain and rrr, but
-        // can probably be improved
-        double overhead = 128;
-        if (n == 0 || m == 0 || m == n)
-            return overhead;
-        double plain = 1.02 * n;
-        double entropy = (1. * m / n * log(1. * n / m) / log(2) + 1. * (n - m) / n * log(1. * n / (n - m)) / log(2));
-        double rrr = overhead + (0.1 + entropy) * n;
-        return std::min(plain, rrr);
-    }
-
-    //! Constructor for a Container of unsigned integers.
-    /*! \param c          A container of unsigned integers.
-          * \param max_level  Maximum number of levels to use.
-          */
-    template <class Container>
-    dac_vector_dp(Container && c, int max_levels = t_default_max_levels)
-    {
-        assert(max_levels > 0);
-        m_size = c.size();
-        std::vector<uint64_t> cnt(128, 0);
-        cnt[0] = m_size;
-        int max_msb = 0;
-        for (size_t i = 0; i < m_size; ++i)
-        {
-            auto x = c[i] >> 1;
-            int lvl = 1;
-            while (x > 0)
-            {
-                cnt[lvl] += 1;
-                max_msb = std::max(max_msb, lvl);
-                x >>= 1;
-                ++lvl;
-            }
-        }
-
-        // f[i][j] = minimum cost for subsequence with MSB >= i, when we can
-        // use up to j levels.
-        std::vector<std::vector<double>> f(max_msb + 2, std::vector<double>(max_levels + 1));
-        std::vector<std::vector<int>> nxt(max_msb + 2, std::vector<int>(max_levels + 1));
-        std::fill(f[max_msb + 1].begin(), f[max_msb + 1].end(), 0.0);
-        std::fill(nxt[max_msb + 1].begin(), nxt[max_msb + 1].end(), -1);
-        for (int b = max_msb; b >= 0; --b)
-        {
-            std::fill(f[b].begin(), f[b].end(), std::numeric_limits<double>::infinity());
-            for (int lvl = 1; lvl <= max_levels; ++lvl)
-            {
-                for (int b2 = b + 1; b2 <= max_msb + 1; ++b2)
+                for (int high = low + 1; high <= max_width; ++high)
                 {
-                    double w = b2 * (cnt[b] - cnt[b2]) + cost(cnt[b], cnt[b2]) + f[b2][lvl - 1];
-                    if (w < f[b][lvl])
+                    if (cost[k - 1][high] == inf)
+                        continue;
+                    double const bits = level_bits(wider, low, high) + cost[k - 1][high];
+                    if (bits < cost[k][low])
                     {
-                        f[b][lvl] = w;
-                        nxt[b][lvl] = b2;
+                        cost[k][low] = bits;
+                        next[k][low] = high;
                     }
                 }
             }
         }
-        std::vector<int> bit_sizes;
-        int b = 0, lvl = max_levels;
-        while (nxt[b][lvl] != -1)
-        {
-            b = nxt[b][lvl];
-            lvl--;
-            bit_sizes.push_back(b);
-        }
-        assert(bit_sizes.size() <= (unsigned int)max_levels);
-
-        size_t total_overflow_size = 0;
-        for (size_t i = 0; i < c.size(); ++i)
-        {
-            size_t b = 0;
-            int msb = bits::hi(c[i]);
-            ++total_overflow_size;
-            while (b < bit_sizes.size() && msb >= bit_sizes[b])
-            {
-                ++b;
-                ++total_overflow_size;
-            }
-        }
-
-        m_data.resize(bit_sizes.size());
-        m_overflow_tmp.resize(total_overflow_size);
-        construct_level(0, 0, bit_sizes, c);
+        std::vector<int> widths;
+        for (int k = max_levels, low = 0; low < max_width; --k)
+            widths.push_back(low = next[k][low]);
+        return widths;
     }
 
-    //! The number of levels in the dac_vector.
+    static int value_width(uint64_t x)
+    {
+        return x ? bits::hi(x) + 1 : 0;
+    }
+
+    void set_rank()
+    {
+        m_next_rank.set_vector(&m_next);
+    }
+
+public:
+    dac_vector_dp() = default;
+
+    // The rank structures are assigned, not copy-constructed: some declare only a copy assignment.
+    dac_vector_dp(dac_vector_dp const & other) :
+        m_next(other.m_next),
+        m_level(other.m_level),
+        m_start(other.m_start),
+        m_size(other.m_size)
+    {
+        m_next_rank = other.m_next_rank;
+        set_rank();
+    }
+
+    dac_vector_dp(dac_vector_dp && other) noexcept
+    {
+        *this = std::move(other);
+    }
+
+    dac_vector_dp & operator=(dac_vector_dp const & other)
+    {
+        if (this != &other)
+            *this = dac_vector_dp(other);
+        return *this;
+    }
+
+    dac_vector_dp & operator=(dac_vector_dp && other) noexcept
+    {
+        m_next = std::move(other.m_next);
+        m_next_rank = std::move(other.m_next_rank);
+        m_level = std::move(other.m_level);
+        m_start = std::move(other.m_start);
+        m_size = std::exchange(other.m_size, 0);
+        set_rank();
+        other.set_rank();
+        return *this;
+    }
+
+    //! Builds the vector from a container of unsigned integers.
+    /*! \param c          Any container with size() and operator[].
+     *  \param max_levels Maximum number of levels.
+     */
+    template <class Container>
+    dac_vector_dp(Container const & c, int max_levels = t_max_levels)
+    {
+        assert(max_levels > 0);
+        m_size = c.size();
+
+        std::array<uint64_t, 66> wider{};
+        int max_width = 1; // a vector of zeros still needs one level
+        for (size_type i = 0; i < m_size; ++i)
+        {
+            int const width = value_width(c[i]);
+            ++wider[width];
+            max_width = std::max(max_width, width);
+        }
+        // Turn the counts of each width into counts of the values wider than each width.
+        uint64_t count = 0;
+        for (int w = 64; w >= 0; --w)
+            count += std::exchange(wider[w], count);
+        wider[0] = m_size; // every value enters the first level
+
+        std::vector<int> const widths = choose_widths(wider, max_width, max_levels);
+        m_level.resize(widths.size());
+        m_start.resize(widths.size());
+
+        size_t next_bits = 0;
+        for (size_t l = 0; l < widths.size(); ++l)
+            next_bits += wider[l ? widths[l - 1] : 0];
+        bit_vector next(next_bits, 0);
+
+        // Values that reach the current level, in their original order.
+        int_vector<> pending(m_size, 0, max_width);
+        for (size_type i = 0; i < m_size; ++i)
+            pending[i] = c[i];
+        size_t bit = 0;
+        for (size_t l = 0; l < widths.size(); ++l)
+        {
+            m_start[l] = bit;
+            int_vector<> ending(pending.size(), 0, widths[l]);
+            size_type ends = 0, continues = 0;
+            for (size_type i = 0; i < pending.size(); ++i, ++bit)
+            {
+                uint64_t const value = pending[i];
+                if (value_width(value) > widths[l])
+                {
+                    next[bit] = 1;
+                    pending[continues++] = value;
+                }
+                else
+                {
+                    ending[ends++] = value;
+                }
+            }
+            ending.resize(ends);
+            util::bit_compress(ending);
+            m_level[l] = t_storage<0>(std::move(ending));
+            pending.resize(continues);
+        }
+        assert(pending.empty() && bit == next_bits);
+        m_next = t_bv(std::move(next));
+        m_next_rank = rank_type(&m_next);
+    }
+
+    //! The number of levels.
     size_t levels() const
     {
-        return m_data.size();
+        return m_level.size();
     }
 
-    //! The number of elements in the dac_vector.
     size_type size() const
     {
         return m_size;
     }
 
-    //! Returns if the dac_vector is empty.
     bool empty() const
     {
-        return !size();
+        return m_size == 0;
     }
 
-    //! Iterator that points to the first element of the dac_vector.
-    const_iterator const begin() const
+    const_iterator begin() const
     {
         return const_iterator(this, 0);
     }
 
-    //! Iterator that points to the position after the last element of the dac_vector.
-    const_iterator const end() const
+    const_iterator end() const
     {
         return const_iterator(this, size());
     }
 
-    //! []-operator
+    //! The i-th value.
     value_type operator[](size_type i) const
     {
-        size_t level = 0, offset = m_offsets[level];
-        while (m_overflow[offset + i])
+        assert(i < size());
+        size_t level = 0;
+        // Within a level, i is the value's position among the values that reached it.
+        while (m_next[m_start[level] + i])
         {
-            i = m_overflow_rank(offset + i) - m_overflow_rank(offset);
-            level++;
-            offset = m_offsets[level];
+            i = m_next_rank(m_start[level] + i) - m_next_rank(m_start[level]);
+            ++level;
         }
-        i -= m_overflow_rank(offset + i) - m_overflow_rank(offset);
-        return m_data[level][i];
+        i -= m_next_rank(m_start[level] + i) - m_next_rank(m_start[level]);
+        return m_level[level][i];
     }
 
-    //! Serializes the dac_vector to a stream.
     size_type serialize(std::ostream & out, structure_tree_node * v = nullptr, std::string name = "") const
     {
         structure_tree_node * child = structure_tree::add_child(v, name, util::class_name(*this));
         size_type written_bytes = 0;
-
-        written_bytes += m_overflow.serialize(out, child, "overflow");
-        written_bytes += m_overflow_rank.serialize(out, child, "overflow_rank");
-
-        written_bytes += sdsl::serialize(m_data, out, child, "data");
-        written_bytes += sdsl::serialize(m_offsets, out, child, "offsets");
-
+        written_bytes += m_next.serialize(out, child, "overflow");
+        written_bytes += m_next_rank.serialize(out, child, "overflow_rank");
+        written_bytes += sdsl::serialize(m_level, out, child, "data");
+        written_bytes += sdsl::serialize(m_start, out, child, "offsets");
         structure_tree::add_size(child, written_bytes);
         return written_bytes;
     }
 
-    //! Load from a stream.
     void load(std::istream & in)
     {
-        m_overflow.load(in);
-        m_overflow_rank.load(in);
-        m_overflow_rank.set_vector(&m_overflow);
-        sdsl::load(m_data, in);
-        sdsl::load(m_offsets, in);
+        m_next.load(in);
+        m_next_rank.load(in);
+        set_rank();
+        sdsl::load(m_level, in);
+        sdsl::load(m_start, in);
         m_size = 0;
-        for (auto & v : m_data)
-            m_size += v.size();
+        for (auto const & level : m_level)
+            m_size += level.size();
     }
 };
 
