@@ -11,11 +11,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
-#include <cstring>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -34,7 +32,6 @@
 #include <sdsl/config.hpp>
 #include <sdsl/memory_tracking.hpp>
 #include <sdsl/ram_fs.hpp>
-#include <sdsl/util.hpp>
 
 #include <sys/mman.h> // IWYU pragma: keep
 

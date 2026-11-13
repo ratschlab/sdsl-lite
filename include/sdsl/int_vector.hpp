@@ -1569,7 +1569,7 @@ inline int_vector<t_width>::int_vector(size_type size, value_type default_value,
     m_width(t_width)
 {
     width(int_width);
-    if (size) assign(size, default_value);
+    assign(size, default_value);
 }
 
 template <uint8_t t_width>
@@ -1676,7 +1676,7 @@ auto int_vector<t_width>::get_int(size_type idx, uint8_t const len) const -> val
         throw std::out_of_range("OUT_OF_RANGE_ERROR: int_vector::get_int(size_type, uint8_t); len>64!");
     }
 #endif
-    return len ? bits::read_int(m_data + (idx >> 6), idx & 0x3F, len) : 0;
+    return bits::read_int(m_data + (idx >> 6), idx & 0x3F, len);
 }
 
 template <uint8_t t_width>
