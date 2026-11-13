@@ -714,22 +714,13 @@ constexpr uint32_t bits_impl<T>::sel11(uint64_t x, uint32_t i, uint32_t c)
 template <typename T>
 constexpr void bits_impl<T>::write_int(uint64_t * word, uint64_t x, uint8_t offset, uint8_t const len)
 {
-    x &= bits_impl<T>::lo_set[len];
-    uint64_t low = detail::load_unaligned(word);
-    if (offset + len < 64)
+    auto const mask = bits_impl<T>::lo_set[len];
+    x &= mask;
+    detail::store_unaligned(word, (detail::load_unaligned(word) & ~(mask << offset)) | (x << offset));
+    if (offset + len > 64)
     {
-        low &= (bits_impl<T>::all_set << (offset + len)) | bits_impl<T>::lo_set[offset];
-        detail::store_unaligned(word, low | (x << offset));
-    }
-    else
-    {
-        low &= bits_impl<T>::lo_set[offset];
-        detail::store_unaligned(word, low | (x << offset));
-        if ((offset = (offset + len) & 0x3F))
-        {
-            uint64_t high = detail::load_unaligned(word + 1) & ~bits_impl<T>::lo_set[offset];
-            detail::store_unaligned(word + 1, high | (x >> (len - offset)));
-        }
+        auto const shift = 64 - offset;
+        detail::store_unaligned(word + 1, (detail::load_unaligned(word + 1) & ~(mask >> shift)) | (x >> shift));
     }
 }
 
