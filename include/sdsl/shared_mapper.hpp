@@ -38,8 +38,7 @@ public:
     // The stream is always opened in binary mode: loaders use its positions as
     // offsets into the mapping, which text mode would not preserve.
     explicit shared_mapper_ifstream(std::string const & filename, std::ios_base::openmode mode = std::ios_base::in) :
-        std::ifstream(filename, mode | std::ios_base::binary),
-        m_filename(filename)
+        std::ifstream(filename, mode | std::ios_base::binary)
     {
         // An empty file cannot be mapped and has no payload to map.
         if (good() && util::file_size(filename) > 0)
@@ -52,14 +51,7 @@ public:
         return m_mapper;
     }
 
-    //! Fork: the name the stream was opened with.
-    std::string const & filename() const noexcept
-    {
-        return m_filename;
-    }
-
 private:
-    std::string m_filename; // fork: MetaGraph reads it back
     std::shared_ptr<byte_mapper const> m_mapper;
 };
 } // namespace sdsl

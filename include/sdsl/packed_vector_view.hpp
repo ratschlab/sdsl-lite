@@ -40,8 +40,15 @@ class packed_vector_view : public std::ranges::view_interface<packed_vector_view
 {
     static_assert(Width <= 64);
     using vector_type = int_vector<Width>;
+    // Deleter of the int_vector a view takes over. into_owned() looks for it.
+    struct owned_deleter
+    {
+        void operator()(vector_type const * p) const noexcept
+        {
+            delete p;
+        }
+    };
     std::shared_ptr<void const> owner_;
-    vector_type * owned_ = nullptr; // fork: the owned vector, for into_owned()
     std::byte const * bytes_ = nullptr;
     uint64_t bits_ = 0;
     uint8_t width_ = Width ? Width : 64;
@@ -50,9 +57,6 @@ public:
     // View-backed rank supports, as int_vector names its owned ones.
     typedef rank_support_v<1, 1, packed_vector_view, sdsl::packed_vector_view> rank_1_type;
     typedef rank_support_v<0, 1, packed_vector_view, sdsl::packed_vector_view> rank_0_type;
-    // Fork: view-backed select supports, used by MetaGraph.
-    typedef select_support_mcl<1, 1, packed_vector_view, sdsl::packed_vector_view> select_1_type;
-    typedef select_support_mcl<0, 1, packed_vector_view, sdsl::packed_vector_view> select_0_type;
     using size_type = uint64_t;
     using value_type = uint64_t;
     using difference_type = ptrdiff_t;
@@ -71,8 +75,7 @@ public:
     }
     explicit packed_vector_view(vector_type value)
     {
-        auto p = std::make_shared<vector_type>(std::move(value));
-        owned_ = p.get();
+        std::shared_ptr<vector_type const> p(new vector_type(std::move(value)), owned_deleter{});
         bytes_ = reinterpret_cast<std::byte const *>(p->data());
         bits_ = p->bit_size();
         width_ = p->width();
@@ -136,7 +139,6 @@ public:
     void swap(packed_vector_view & v) noexcept
     {
         owner_.swap(v.owner_);
-        std::swap(owned_, v.owned_);
         std::swap(bytes_, v.bytes_);
         std::swap(bits_, v.bits_);
         std::swap(width_, v.width_);
@@ -192,16 +194,17 @@ public:
             std::memcpy(v.data(), bytes_, bytes().size());
         return v;
     }
-    // Fork: moves the vector out when this view is its only owner, otherwise copies.
+    // Leaves the view empty. Returns the int_vector this view was constructed
+    // from without copying it if no other view shares it, otherwise a copy.
     vector_type into_owned() &&
     {
-        if (owned_ && owner_.use_count() == 1)
-        {
-            auto v = std::move(*owned_);
-            *this = packed_vector_view();
-            return v;
-        }
-        return to_owned();
+        vector_type v;
+        if (owner_.use_count() == 1 && std::get_deleter<owned_deleter>(owner_))
+            v = std::move(*static_cast<vector_type *>(const_cast<void *>(owner_.get())));
+        else
+            v = to_owned();
+        *this = packed_vector_view();
+        return v;
     }
     using const_iterator = random_access_const_iterator<packed_vector_view>;
     using iterator = const_iterator;
