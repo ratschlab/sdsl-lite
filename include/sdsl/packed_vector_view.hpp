@@ -1,5 +1,12 @@
+// Copyright (c) 2016, the SDSL Project Authors.  All rights reserved.
+// Please see the AUTHORS file for details.  Use of this source code is governed
+// by a BSD license that can be found in the LICENSE file.
+/*!\file packed_vector_view.hpp
+ * \brief packed_vector_view.hpp contains packed_vector_view, immutable packed storage that copies share.
+ */
 #ifndef SDSL_PACKED_VECTOR_VIEW_HPP
 #define SDSL_PACKED_VECTOR_VIEW_HPP
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <istream>
@@ -11,7 +18,6 @@
 #include <utility>
 
 #include <sdsl/int_vector.hpp>
-#include <sdsl/int_vector_mapper.hpp>
 #include <sdsl/iterators.hpp>
 #include <sdsl/packed_word_iterator.hpp>
 #include <sdsl/shared_mapper.hpp>
@@ -20,45 +26,47 @@ namespace sdsl
 {
 // Immutable packed storage. Payloads contain whole 64-bit words but need not
 // be aligned in memory. Copies retain the shared storage. Iterators and
-// rank/select supports borrow the view object, which must outlive them.
+// rank/select supports refer to the view object, not to its storage: the
+// object must outlive them, and once it is moved from they see an empty view,
+// although the storage lives on in the moved-to view. Iterators of int_vector
+// follow the storage instead.
 // No mutable access is exposed. load() and serialize() use the int_vector<Width>
 // format; load() maps the payload from a shared_mapper_ifstream and copies it
-// from any other stream.
+// from any other stream. Only an explicit shared_mapper_ifstream maps:
+// load_from_file() opens an isfstream and therefore copies. There is no cereal
+// support, so types with view storage cannot be serialized with cereal.
 template <uint8_t Width = 0>
 class packed_vector_view : public std::ranges::view_interface<packed_vector_view<Width>>
 {
     static_assert(Width <= 64);
     using vector_type = int_vector<Width>;
     std::shared_ptr<void const> owner_;
-    vector_type * owned_ = nullptr;
+    vector_type * owned_ = nullptr; // fork: the owned vector, for into_owned()
     std::byte const * bytes_ = nullptr;
     uint64_t bits_ = 0;
     uint8_t width_ = Width ? Width : 64;
 
 public:
-    // View-backed supports, as int_vector names its owned ones.
+    // View-backed rank supports, as int_vector names its owned ones.
     typedef rank_support_v<1, 1, packed_vector_view, sdsl::packed_vector_view> rank_1_type;
     typedef rank_support_v<0, 1, packed_vector_view, sdsl::packed_vector_view> rank_0_type;
+    // Fork: view-backed select supports, used by MetaGraph.
     typedef select_support_mcl<1, 1, packed_vector_view, sdsl::packed_vector_view> select_1_type;
     typedef select_support_mcl<0, 1, packed_vector_view, sdsl::packed_vector_view> select_0_type;
     using size_type = uint64_t;
     using value_type = uint64_t;
     using difference_type = ptrdiff_t;
-    using byte_mapper = int_vector_mapper<8, std::ios_base::in>;
+    // As int_vector: the width if it is fixed, otherwise 0.
+    static constexpr uint8_t fixed_int_width = Width;
     packed_vector_view() = default;
     packed_vector_view(packed_vector_view const &) = default;
-    packed_vector_view & operator=(packed_vector_view const &) = default;
     packed_vector_view(packed_vector_view && v) noexcept
     {
         swap(v);
     }
-    packed_vector_view & operator=(packed_vector_view && v) noexcept
+    packed_vector_view & operator=(packed_vector_view v) noexcept
     {
-        if (this != &v)
-        {
-            packed_vector_view tmp(std::move(v));
-            swap(tmp);
-        }
+        swap(v);
         return *this;
     }
     explicit packed_vector_view(vector_type value)
@@ -88,49 +96,31 @@ public:
         v.width_ = width;
         return v;
     }
-    static packed_vector_view
-    from_mapping(std::shared_ptr<byte_mapper const> owner, uint64_t offset, uint64_t bit_size, uint8_t width = Width)
-    {
-        if (!owner || offset > owner->size())
-            throw std::out_of_range("Packed view offset");
-        std::span bytes(reinterpret_cast<std::byte const *>(owner->data()), owner->size());
-        return from_bytes(owner, bytes.subspan(offset), bit_size, width);
-    }
+    // Throws std::ios_base::failure if reading fails and, from a
+    // shared_mapper_ifstream, std::invalid_argument if the payload exceeds the file.
     void load(std::istream & in)
     {
-        packed_vector_view next;
         auto * mapped = dynamic_cast<shared_mapper_ifstream *>(&in);
-        if (mapped && mapped->mapper())
-        {
-            int_vector_size_type bits = 0;
-            uint8_t width = Width;
-            vector_type::read_header(bits, width, in);
-            auto const pos = in.tellg();
-            if (!in || pos < 0)
-                throw std::ios_base::failure("packed_vector_view: cannot read header");
-            auto const & owner = mapped->mapper();
-            std::span file(reinterpret_cast<std::byte const *>(owner->data()), owner->size());
-            if (static_cast<uint64_t>(pos) > file.size())
-                throw std::ios_base::failure("packed_vector_view: header outside file");
-            try
-            {
-                next = from_bytes(owner, file.subspan(pos), bits, width);
-            }
-            catch (std::invalid_argument const & e)
-            {
-                throw std::ios_base::failure(std::string("packed_vector_view: ") + e.what());
-            }
-            in.seekg(next.bytes().size(), std::ios_base::cur);
-        }
-        else
+        if (!mapped || !mapped->mapper())
         {
             vector_type value;
             value.load(in);
-            next = packed_vector_view(std::move(value));
+            if (!in)
+                throw std::ios_base::failure("packed_vector_view: cannot load");
+            *this = packed_vector_view(std::move(value));
+            return;
         }
-        if (!in)
-            throw std::ios_base::failure("packed_vector_view: cannot load");
-        *this = std::move(next);
+        int_vector_size_type bits = 0;
+        uint8_t width = Width;
+        vector_type::read_header(bits, width, in);
+        auto const pos = in.tellg();
+        auto const & mapper = mapped->mapper();
+        std::span file(reinterpret_cast<std::byte const *>(mapper->data()), mapper->size());
+        // The stream can reach past the mapping if the file grew after it was mapped.
+        if (pos < 0 or static_cast<uint64_t>(pos) > file.size())
+            throw std::ios_base::failure("packed_vector_view: cannot read header");
+        *this = from_bytes(mapper, file.subspan(pos), bits, width);
+        in.seekg(bytes().size(), std::ios_base::cur);
     }
     uint64_t serialize(std::ostream & out, structure_tree_node * v = nullptr, std::string name = "") const
     {
@@ -180,9 +170,13 @@ public:
         assert(length <= 64 && bit <= bits_ && length <= bits_ - bit);
         if (!length)
             return 0;
-        auto p = data() + (bit >> 6);
-        auto shift = bit & 63;
-        return bits::read_int(p, shift, length);
+        // As bits::read_int, but never reads past the last payload word.
+        auto const word = data() + (bit >> 6);
+        uint64_t const offset = bit & 63;
+        uint64_t value = *word >> offset;
+        if (offset + length > 64)
+            value |= word[1] << (64 - offset);
+        return value & bits::lo_set[length];
     }
     uint64_t operator[](uint64_t i) const
     {
@@ -198,9 +192,9 @@ public:
             std::memcpy(v.data(), bytes_, bytes().size());
         return v;
     }
+    // Fork: moves the vector out when this view is its only owner, otherwise copies.
     vector_type into_owned() &&
     {
-        // Transfer a unique allocation; mapped or shared storage needs a copy.
         if (owned_ && owner_.use_count() == 1)
         {
             auto v = std::move(*owned_);
@@ -223,7 +217,13 @@ public:
     {
         if (bits_ != v.bits_ || width_ != v.width_)
             return false;
-        return detail::equal_packed_bits(data(), v.data(), bits_);
+        for (uint64_t bit = 0; bit < bits_; bit += 64)
+        {
+            uint8_t const length = std::min<uint64_t>(64, bits_ - bit);
+            if (get_int(bit, length) != v.get_int(bit, length))
+                return false;
+        }
+        return true;
     }
 };
 static_assert(std::ranges::random_access_range<packed_vector_view<1>>);

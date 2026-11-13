@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <random>
 #include <sstream>
+#include <span>
 #include <string>
 #include <unistd.h>
 #include <utility>
@@ -20,6 +21,16 @@
 
 namespace
 {
+
+// A view of a mapped file from a byte offset, as packed_vector_view::from_bytes sees it.
+template <class View>
+View view_from_mapping(std::shared_ptr<sdsl::shared_mapper_ifstream::byte_mapper const> owner,
+                       uint64_t offset,
+                       uint64_t bit_size)
+{
+    std::span bytes(reinterpret_cast<std::byte const *>(owner->data()), owner->size());
+    return View::from_bytes(owner, bytes.subspan(offset), bit_size);
+}
 
 typedef sdsl::int_vector<>::size_type size_type;
 typedef sdsl::int_vector<>::value_type value_type;
@@ -421,8 +432,8 @@ TEST_F(int_vector_mapper_test, read_only_views_release_os_descriptors)
     std::vector<view_type> views;
     for (size_t i = 0; i < 64; ++i)
     {
-        auto owner = std::make_shared<view_type::byte_mapper const>(file, true);
-        views.push_back(view_type::from_mapping(owner, 0, bits.size()));
+        auto owner = std::make_shared<sdsl::shared_mapper_ifstream::byte_mapper const>(file, true);
+        views.push_back(view_from_mapping<view_type>(owner, 0, bits.size()));
     }
     for (auto const & view : views)
     {
@@ -565,8 +576,8 @@ TEST_F(int_vector_mapper_test, packed_view_rank_select)
                     out.write(reinterpret_cast<char const *>(expected.data()), ((size + 63) / 64) * 8);
                 out.put('!'); // permits an empty payload in an otherwise nonempty mapping
             }
-            auto owner = std::make_shared<view_type::byte_mapper const>(file, true);
-            auto view = view_type::from_mapping(owner, offset, size);
+            auto owner = std::make_shared<sdsl::shared_mapper_ifstream::byte_mapper const>(file, true);
+            auto view = view_from_mapping<view_type>(owner, offset, size);
             auto alias = view;
             owner.reset();
             sdsl::rank_support_v5<1, 1, view_type> rank(&view);

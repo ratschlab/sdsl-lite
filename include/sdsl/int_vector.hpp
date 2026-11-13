@@ -875,6 +875,7 @@ public:
     //! Read the size and int_width of a int_vector
     static size_t read_header(int_vector_size_type & size, int_width_type & int_width, std::istream & in)
     {
+        size = 0; // a short read of a truncated file must not leave an arbitrary size
         read_member(size, in);
         if constexpr (t_width == 0)
             read_member(int_width, in);

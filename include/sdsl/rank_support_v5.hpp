@@ -37,6 +37,9 @@ namespace sdsl
  *
  * \tparam t_b       Bit pattern `0`,`1`,`10`,`01` which should be ranked.
  * \tparam t_pat_len Length of the bit pattern.
+ * \tparam Vector    Type of the supported bit vector.
+ * \tparam t_storage Storage of the rank samples, e.g. packed_vector_view.
+ *                   Serialization with cereal requires int_vector.
  *
  * @ingroup rank_support_group
  */

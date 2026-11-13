@@ -1,7 +1,10 @@
 #ifndef SDSL_UNALIGNED_ACCESS_HPP
 #define SDSL_UNALIGNED_ACCESS_HPP
+#include <cstdint>
 #include <cstring>
 #include <type_traits>
+
+#include <sdsl/packed_word_iterator.hpp>
 
 namespace sdsl::detail
 {
@@ -21,6 +24,12 @@ constexpr Word load_unaligned(Word const * address) noexcept
     if (std::is_constant_evaluated())
         return *address;
     return load_unaligned<Word>(static_cast<void const *>(address));
+}
+
+// Word iterators over unaligned storage already read through memcpy.
+inline uint64_t load_unaligned(packed_word_iterator p) noexcept
+{
+    return *p;
 }
 
 template <class Word>

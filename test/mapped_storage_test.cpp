@@ -1,21 +1,27 @@
 // Types with view storage read their payloads from a shared_mapper_ifstream
 // without copying them, and behave like the owned types.
+#include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
+#include <system_error>
+#include <unistd.h>
 #include <vector>
 
-#include <sdsl/bit_vector_il.hpp>
-#include <sdsl/dac_vector_dp.hpp>
 #include <sdsl/packed_vector_view.hpp>
-#include <sdsl/rank_support_v5.hpp>
 #include <sdsl/rank_support_v.hpp>
+#include <sdsl/rank_support_v5.hpp>
 #include <sdsl/select_support_mcl.hpp>
-#include <sdsl/vlc_vector.hpp>
-#include <sdsl/wt_huff.hpp>
+#include <sdsl/select_support_scan.hpp>
 #include <sdsl/shared_mapper.hpp>
+#include <sdsl/util.hpp>
+
+#include <sys/mman.h>
 
 #include <gtest/gtest.h>
 
@@ -24,10 +30,17 @@ namespace
 
 using sdsl::packed_vector_view;
 
+std::string temp_dir;
+
 class mapped_storage_test : public ::testing::Test
 {
 protected:
-    std::string file = "mapped_storage_" + std::to_string(sdsl::util::pid()) + ".sdsl";
+    std::string file = temp_dir + "/mapped_storage_" + std::to_string(sdsl::util::pid()) + ".sdsl";
+    void SetUp() override
+    {
+        if (sdsl::is_ram_file(temp_dir))
+            GTEST_SKIP() << "Read-only OS mapping requires a disk file";
+    }
     void TearDown() override
     {
         std::remove(file.c_str());
@@ -43,15 +56,15 @@ protected:
         std::ofstream(file, std::ios::binary) << out.str();
         return out.str().substr(prefix);
     }
-
-    template <class T>
-    static std::string serialized(T const & value)
-    {
-        std::ostringstream out;
-        value.serialize(out);
-        return out.str();
-    }
 };
+
+template <class T>
+std::string serialized(T const & value)
+{
+    std::ostringstream out;
+    value.serialize(out);
+    return out.str();
+}
 
 sdsl::bit_vector random_bits(uint64_t size, double density, unsigned seed)
 {
@@ -63,11 +76,18 @@ sdsl::bit_vector random_bits(uint64_t size, double density, unsigned seed)
     return bits;
 }
 
+static_assert(std::is_same_v<packed_vector_view<1>::rank_1_type,
+                             sdsl::rank_support_v<1, 1, packed_vector_view<1>, packed_vector_view>>);
+static_assert(std::is_same_v<sdsl::bit_vector::rank_1_type, sdsl::rank_support_v<1, 1, sdsl::bit_vector>>);
+static_assert(std::is_same_v<sdsl::select_support_mcl<>, sdsl::select_support_mcl<1, 1, sdsl::bit_vector>>);
+
 TEST_F(mapped_storage_test, view_load_maps_and_copies)
 {
     sdsl::int_vector<> values(1000, 0, 13);
     for (size_t i = 0; i < values.size(); ++i)
         values[i] = (i * 7919) & 0x1fff;
+    std::ostringstream header;
+    size_t const header_bytes = sdsl::int_vector<0>::write_header(values.bit_size(), values.width(), header);
     for (size_t prefix = 0; prefix < 9; ++prefix)
     {
         auto const bytes = write(values, prefix);
@@ -77,12 +97,13 @@ TEST_F(mapped_storage_test, view_load_maps_and_copies)
             in.seekg(prefix);
             mapped.load(in);
             EXPECT_EQ(prefix + bytes.size(), static_cast<size_t>(in.tellg()));
-            EXPECT_EQ(reinterpret_cast<std::byte const *>(in.mapper()->data()) + prefix + 9, mapped.bytes().data());
+            EXPECT_EQ(reinterpret_cast<std::byte const *>(in.mapper()->data()) + prefix + header_bytes, mapped.bytes().data());
         }
         {
             std::ifstream in(file, std::ios::binary);
             in.seekg(prefix);
             copied.load(in);
+            EXPECT_EQ(prefix + bytes.size(), static_cast<size_t>(in.tellg()));
         }
         std::remove(file.c_str()); // The mapping keeps the payload alive.
         ASSERT_EQ(values.size(), mapped.size());
@@ -97,29 +118,72 @@ TEST_F(mapped_storage_test, view_load_maps_and_copies)
     }
 }
 
-TEST_F(mapped_storage_test, view_load_rejects_truncated_payload)
+TEST_F(mapped_storage_test, fixed_width_view_serializes_like_int_vector)
+{
+    auto const bits = random_bits(1000, 0.5, 3);
+    auto const bytes = write(bits, 5);
+    packed_vector_view<1> mapped;
+    {
+        sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+        in.seekg(5);
+        mapped.load(in);
+    }
+    EXPECT_EQ(1, mapped.width());
+    EXPECT_EQ(bytes, serialized(mapped));
+    EXPECT_EQ(bytes, serialized(packed_vector_view<1>(bits)));
+    EXPECT_EQ(serialized(sdsl::bit_vector()), serialized(packed_vector_view<1>()));
+    EXPECT_EQ(serialized(sdsl::int_vector<>()), serialized(packed_vector_view<0>()));
+}
+
+TEST_F(mapped_storage_test, view_load_rejects_truncated_input)
 {
     sdsl::bit_vector bits(1000, 1);
-    auto bytes = write(bits, 0);
-    std::ofstream(file, std::ios::binary) << bytes.substr(0, bytes.size() - 8);
-    sdsl::shared_mapper_ifstream in(file, std::ios::binary);
-    packed_vector_view<1> view;
-    EXPECT_THROW(view.load(in), std::ios_base::failure);
+    auto const bytes = write(bits, 0);
+    for (size_t keep : {bytes.size() - 8, size_t{4}, size_t{0}})
+    {
+        std::ofstream(file, std::ios::binary) << bytes.substr(0, keep);
+        packed_vector_view<1> view;
+        {
+            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+            EXPECT_EQ(keep == 0, in.mapper() == nullptr);
+            if (keep == bytes.size() - 8)
+                EXPECT_THROW(view.load(in), std::invalid_argument);
+            else
+                EXPECT_THROW(view.load(in), std::ios_base::failure);
+        }
+        {
+            std::ifstream in(file, std::ios::binary);
+            EXPECT_THROW(view.load(in), std::ios_base::failure);
+        }
+        EXPECT_EQ(0u, view.size());
+    }
+}
+
+// Expected select answers for the pattern of `Select`.
+template <class Select>
+std::vector<uint64_t> pattern_positions(sdsl::bit_vector const & bits)
+{
+    std::vector<uint64_t> positions;
+    for (uint64_t j = Select::bit_pat_len - 1; j < bits.size(); ++j)
+    {
+        bool found = true;
+        for (uint8_t k = 0; k < Select::bit_pat_len; ++k)
+            found &= bits[j - k] == ((Select::bit_pat >> k) & 1);
+        if (found)
+            positions.push_back(j);
+    }
+    return positions;
 }
 
 template <class Select, class Bits>
 void check_select(sdsl::bit_vector const & bits, Bits const & loaded, Select const & select)
 {
-    uint64_t ones = 0;
+    ASSERT_EQ(bits.size(), loaded.size());
     for (uint64_t i = 0; i < bits.size(); ++i)
-    {
-        if (bits[i] == Select::bit_pat)
-        {
-            ++ones;
-            ASSERT_EQ(i, select.select(ones));
-        }
         ASSERT_EQ(bits[i], loaded[i]);
-    }
+    auto const positions = pattern_positions<Select>(bits);
+    for (uint64_t i = 0; i < positions.size(); ++i)
+        ASSERT_EQ(positions[i], select.select(i + 1));
 }
 
 template <class Rank, class Bits>
@@ -146,8 +210,8 @@ void check_support_storage(std::string const & file, sdsl::bit_vector const & bi
     packed_vector_view<1> owned_bits(bits);
     Support owned(&owned_bits);
     Reference reference(&bits);
-    std::ostringstream ref_out;
-    reference.serialize(ref_out);
+    auto const ref_bytes = serialized(reference);
+    ASSERT_EQ(ref_bytes, serialized(owned));
     for (size_t prefix : {0, 3, 8})
     {
         {
@@ -165,6 +229,9 @@ void check_support_storage(std::string const & file, sdsl::bit_vector const & bi
             mapped_bits.load(in);
             mapped.load(in, &mapped_bits);
             ASSERT_TRUE(in);
+            // The stream, the bit vector and the rank samples share the mapping.
+            ASSERT_EQ(3, in.mapper().use_count());
+            ASSERT_EQ(prefix + serialized(owned_bits).size() + ref_bytes.size(), static_cast<size_t>(in.tellg()));
         }
         {
             std::ifstream in(file, std::ios::binary);
@@ -172,20 +239,22 @@ void check_support_storage(std::string const & file, sdsl::bit_vector const & bi
             copied_bits.load(in);
             copied.load(in, &copied_bits);
         }
-        std::remove(file.c_str());
+        std::remove(file.c_str()); // The mapping keeps the payload alive.
         check(bits, mapped_bits, mapped);
         check(bits, copied_bits, copied);
-        std::ostringstream a, b;
-        mapped.serialize(a);
-        copied.serialize(b);
-        EXPECT_EQ(ref_out.str(), a.str());
-        EXPECT_EQ(ref_out.str(), b.str());
+        EXPECT_TRUE(mapped == copied);
+        EXPECT_EQ(ref_bytes, serialized(mapped));
+        EXPECT_EQ(ref_bytes, serialized(copied));
         // Copies and moves keep the mapping alive.
         Support copy(mapped);
+        Support assigned;
+        assigned = copy;
         Support moved(std::move(mapped));
         mapped = Support();
         check(bits, mapped_bits, copy);
+        check(bits, mapped_bits, assigned);
         check(bits, mapped_bits, moved);
+        EXPECT_EQ(ref_bytes, serialized(moved));
     }
 }
 
@@ -194,271 +263,203 @@ void for_each_bits(Check check)
 {
     unsigned seed = 1;
     // Below 100000 bits MCL uses its slow construction, above it the fast one.
-    for (uint64_t size : {0ull, 1ull, 64ull, 2049ull, 5000ull, 300000ull})
+    // 4096 ends at a superblock of rank_support_v (512 bits) and rank_support_v5 (2048 bits).
+    for (uint64_t size : {0ull, 1ull, 64ull, 2049ull, 4096ull, 5000ull, 300000ull})
         for (double density : {0.001, 0.5, 0.999})
             check(random_bits(size, density, seed++));
 }
 
-TEST_F(mapped_storage_test, select_mcl_view_storage)
-{
-    for_each_bits([&](sdsl::bit_vector const & bits) {
-        using V = packed_vector_view<1>;
-        check_support_storage<sdsl::select_support_mcl<1, 1, V, packed_vector_view>, sdsl::select_support_mcl<1, 1>>(
-            file, bits, check_select<sdsl::select_support_mcl<1, 1, V, packed_vector_view>, V>);
-        check_support_storage<sdsl::select_support_mcl<0, 1, V, packed_vector_view>, sdsl::select_support_mcl<0, 1>>(
-            file, bits, check_select<sdsl::select_support_mcl<0, 1, V, packed_vector_view>, V>);
-    });
-}
-
 TEST_F(mapped_storage_test, rank_v5_view_storage)
 {
-    for_each_bits([&](sdsl::bit_vector const & bits) {
-        using V = packed_vector_view<1>;
-        using R1 = sdsl::rank_support_v5<1, 1, V, packed_vector_view>;
-        using R0 = sdsl::rank_support_v5<0, 1, V, packed_vector_view>;
-        check_support_storage<R1, sdsl::rank_support_v5<1, 1>>(file, bits, check_rank<R1, V>);
-        check_support_storage<R0, sdsl::rank_support_v5<0, 1>>(file, bits, check_rank<R0, V>);
-    });
-}
-
-// Check access, rank and select of a compressed bit vector type.
-template <class BV>
-void check_bit_vector(sdsl::bit_vector const & bits, BV const & bv)
-{
-    ASSERT_EQ(bits.size(), bv.size());
-    typename BV::rank_1_type rank1(&bv);
-    typename BV::select_1_type select1(&bv);
-    typename BV::select_0_type select0(&bv);
-    uint64_t ones = 0;
-    for (uint64_t i = 0; i < bits.size(); ++i)
-    {
-        ASSERT_EQ(ones, rank1(i));
-        ASSERT_EQ(bits[i], bv[i]);
-        if (bits[i])
-            ASSERT_EQ(i, select1(++ones));
-        else
-            ASSERT_EQ(i, select0(i + 1 - ones));
-        if (i + 64 <= bits.size())
-            ASSERT_EQ(bits.get_int(i, 64), bv.get_int(i, 64));
-    }
-    ASSERT_EQ(ones, rank1(bits.size()));
-}
-
-// Load a compressed bit vector with view storage from a mapped and a plain
-// stream at several byte offsets. Its serialization must equal that of `Owned`.
-template <class BV, class Owned>
-void check_bit_vector_storage(std::string const & file, sdsl::bit_vector const & bits)
-{
-    BV built(bits);
-    std::ostringstream ref_out;
-    Owned(bits).serialize(ref_out);
-    std::ostringstream built_out;
-    built.serialize(built_out);
-    ASSERT_EQ(ref_out.str(), built_out.str());
-    check_bit_vector(bits, built);
-    for (size_t prefix : {0, 3, 8})
-    {
-        std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
-        BV mapped, copied;
+    for_each_bits(
+        [&](sdsl::bit_vector const & bits)
         {
-            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
-            in.seekg(prefix);
-            mapped.load(in);
-            ASSERT_TRUE(in);
-            ASSERT_EQ(prefix + ref_out.str().size(), static_cast<size_t>(in.tellg()));
-        }
-        {
-            std::ifstream in(file, std::ios::binary);
-            in.seekg(prefix);
-            copied.load(in);
-        }
-        std::remove(file.c_str());
-        check_bit_vector(bits, mapped);
-        check_bit_vector(bits, copied);
-        std::ostringstream a, b;
-        mapped.serialize(a);
-        copied.serialize(b);
-        EXPECT_EQ(ref_out.str(), a.str());
-        EXPECT_EQ(ref_out.str(), b.str());
-        BV copy(mapped);
-        BV moved(std::move(mapped));
-        mapped = BV();
-        check_bit_vector(bits, copy);
-        check_bit_vector(bits, moved);
-    }
-}
-
-TEST_F(mapped_storage_test, il_view_storage)
-{
-    for_each_bits([&](sdsl::bit_vector const & bits) {
-        check_bit_vector_storage<sdsl::bit_vector_il<512, packed_vector_view>, sdsl::bit_vector_il<512>>(file, bits);
-        check_bit_vector_storage<sdsl::bit_vector_il<4096, packed_vector_view>, sdsl::bit_vector_il<4096>>(file, bits);
-    });
-    // Rank samples are only stored above 64Ki blocks.
-    auto const bits = random_bits(5'000'000, 0.3, 7);
-    check_bit_vector_storage<sdsl::bit_vector_il<64, packed_vector_view>, sdsl::bit_vector_il<64>>(file, bits);
+            using V = packed_vector_view<1>;
+            using R1 = sdsl::rank_support_v5<1, 1, V, packed_vector_view>;
+            using R0 = sdsl::rank_support_v5<0, 1, V, packed_vector_view>;
+            check_support_storage<R1, sdsl::rank_support_v5<1, 1>>(file, bits, check_rank<R1, V>);
+            check_support_storage<R0, sdsl::rank_support_v5<0, 1>>(file, bits, check_rank<R0, V>);
+        });
 }
 
 TEST_F(mapped_storage_test, rank_v_view_storage)
 {
-    for_each_bits([&](sdsl::bit_vector const & bits) {
-        using V = packed_vector_view<1>;
-        using R1 = sdsl::rank_support_v<1, 1, V, packed_vector_view>;
-        using R0 = sdsl::rank_support_v<0, 1, V, packed_vector_view>;
-        check_support_storage<R1, sdsl::rank_support_v<1, 1>>(file, bits, check_rank<R1, V>);
-        check_support_storage<R0, sdsl::rank_support_v<0, 1>>(file, bits, check_rank<R0, V>);
-    });
+    for_each_bits(
+        [&](sdsl::bit_vector const & bits)
+        {
+            using V = packed_vector_view<1>;
+            using R1 = V::rank_1_type;
+            using R0 = V::rank_0_type;
+            check_support_storage<R1, sdsl::rank_support_v<1, 1>>(file, bits, check_rank<R1, V>);
+            check_support_storage<R0, sdsl::rank_support_v<0, 1>>(file, bits, check_rank<R0, V>);
+        });
 }
 
-using view_wt_huff = sdsl::wt_huff<packed_vector_view<1>>;
-static_assert(std::is_same_v<view_wt_huff,
-                             sdsl::wt_huff<packed_vector_view<1>,
-                                           sdsl::rank_support_v<1, 1, packed_vector_view<1>, packed_vector_view>,
-                                           sdsl::select_support_mcl<1, 1, packed_vector_view<1>, packed_vector_view>,
-                                           sdsl::select_support_mcl<0, 1, packed_vector_view<1>, packed_vector_view>>>);
-
-template <class WT>
-void check_wt(sdsl::int_vector<8> const & text, WT const & wt)
+// Select supports over a mapped view bit vector answer as over the owned one.
+TEST_F(mapped_storage_test, select_over_mapped_view)
 {
-    ASSERT_EQ(text.size(), wt.size());
-    std::vector<uint64_t> count(256, 0);
-    for (uint64_t i = 0; i < text.size(); ++i)
+    using V = packed_vector_view<1>;
+    auto check = [&]<uint8_t t_b, uint8_t t_pat_len>(sdsl::bit_vector const & bits)
     {
-        ASSERT_EQ(count[text[i]], wt.rank(i, text[i]));
-        ASSERT_EQ(text[i], wt[i]);
-        ++count[text[i]];
-        ASSERT_EQ(i, wt.select(count[text[i]], text[i]));
+        using Select = sdsl::select_support_mcl<t_b, t_pat_len, V>;
+        sdsl::select_support_mcl<t_b, t_pat_len> reference(&bits);
+        {
+            std::ostringstream out;
+            out << "xyz";
+            bits.serialize(out);
+            reference.serialize(out);
+            std::ofstream(file, std::ios::binary) << out.str();
+        }
+        V mapped;
+        Select loaded; // Its samples are copied from the mapped stream.
+        sdsl::shared_mapper_ifstream in(file, std::ios::binary);
+        in.seekg(3);
+        mapped.load(in);
+        loaded.load(in, &mapped);
+        ASSERT_TRUE(in);
+        Select select(&mapped);
+        sdsl::select_support_scan<t_b, t_pat_len, V> scan(&mapped);
+        EXPECT_EQ(serialized(reference), serialized(select));
+        EXPECT_EQ(serialized(reference), serialized(loaded));
+        check_select(bits, mapped, select);
+        check_select(bits, mapped, loaded);
+        auto const positions = pattern_positions<decltype(select)>(bits);
+        for (uint64_t i = 0; i < std::min<uint64_t>(positions.size(), 100); ++i)
+            ASSERT_EQ(positions[i], scan.select(i + 1));
+    };
+    for_each_bits(
+        [&](sdsl::bit_vector const & bits)
+        {
+            check.template operator()<1, 1>(bits);
+            check.template operator()<0, 1>(bits);
+        });
+    auto const bits = random_bits(20000, 0.5, 9);
+    check.template operator()<10, 2>(bits);
+}
+
+// Copy `size` bytes so that they end right before an inaccessible page. Reading
+// past them then faults in any build, not only under AddressSanitizer.
+std::span<std::byte const> copy_before_guard_page(std::shared_ptr<void const> & owner, void const * data, size_t size)
+{
+    size_t const page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    size_t const length = (size + page - 1) / page * page + page;
+    void * const mapping = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED)
+        throw std::system_error(errno, std::generic_category(), "mmap");
+    owner = std::shared_ptr<void const>(static_cast<void const *>(mapping),
+                                        [length](void const * p)
+                                        {
+                                            munmap(const_cast<void *>(p), length);
+                                        });
+    auto * const guard = static_cast<std::byte *>(mapping) + length - page;
+    if (mprotect(guard, page, PROT_NONE) != 0)
+        throw std::system_error(errno, std::generic_category(), "mprotect");
+    std::memcpy(guard - size, data, size);
+    return {guard - size, size};
+}
+
+// Views have no padding word after a word-aligned end.
+TEST(packed_vector_view_test, supports_read_no_word_past_the_payload)
+{
+    using V = packed_vector_view<1>;
+    for (uint64_t size : {64, 4096, 300032}) // MCL builds fast above 100000 bits
+    {
+        auto const bits = random_bits(size, 0.5, 7);
+        std::shared_ptr<void const> owner;
+        auto const payload = copy_before_guard_page(owner, bits.data(), size / 8);
+        auto const view = V::from_bytes(owner, payload, size);
+        auto const ones = sdsl::util::cnt_one_bits(bits);
+        EXPECT_EQ(ones, (sdsl::rank_support_v<1, 1, V>(&view).rank(size)));
+        EXPECT_EQ(ones, (sdsl::rank_support_v5<1, 1, V>(&view).rank(size)));
+        EXPECT_EQ(size - ones, (sdsl::rank_support_v5<0, 1, V>(&view).rank(size)));
+        EXPECT_EQ(sdsl::select_support_mcl<1>(&bits).select(ones),
+                  (sdsl::select_support_mcl<1, 1, V>(&view).select(ones)));
     }
 }
 
-TEST_F(mapped_storage_test, wt_huff_view_storage)
+TEST(packed_vector_view_test, ownership_and_bounds)
 {
-    std::mt19937_64 rng(5);
-    for (uint64_t size : {0ull, 1ull, 1000ull, 200000ull})
+    // 129 bits hold 25 elements of width 5 and four bits more.
+    auto partial = []
     {
-        for (unsigned sigma : {1u, 4u, 200u})
+        sdsl::int_vector<> v(43, 7, 3);
+        v.width(5);
+        return v;
+    };
+    packed_vector_view<> view(partial());
+    EXPECT_EQ(25u, view.size());
+    EXPECT_EQ(partial(), view.to_owned());
+    EXPECT_EQ(partial().get_int(125, 4), view.get_int(125, 4));
+    auto owned = view.to_owned();
+    owned[0] = 0;
+    EXPECT_NE(owned[0], view[0]);
+    auto bytes = std::make_shared<std::vector<std::byte>>(8);
+    using V = packed_vector_view<1>;
+    EXPECT_THROW(V::from_bytes(bytes, *bytes, 65), std::invalid_argument);
+    EXPECT_THROW(V::from_bytes(bytes, *bytes, 64, 2), std::invalid_argument);
+    EXPECT_THROW(V::from_bytes({}, *bytes, 64), std::invalid_argument);
+    EXPECT_THROW(V::from_bytes(bytes, *bytes, UINT64_MAX), std::invalid_argument);
+}
+
+TEST(packed_vector_view_test, comparison_ignores_padding_and_checks_width)
+{
+    using V = packed_vector_view<>;
+    sdsl::int_vector<> a(65, 1, 1), b(a);
+    b.data()[1] |= 2; // padding bit
+    auto bytes = std::make_shared<std::vector<std::byte>>(3 + 16);
+    std::memcpy(bytes->data() + 3, b.data(), 16);
+    auto const mapped = V::from_bytes(bytes, std::span(*bytes).subspan(3), 65, 1);
+    EXPECT_EQ(V(a), mapped);
+    EXPECT_FALSE(V(a) == V::from_bytes(bytes, std::span(*bytes).subspan(3), 64, 1));
+    auto c = a;
+    c.width(5);
+    EXPECT_FALSE(V(c) == V(a));
+    a[64] = 0;
+    EXPECT_FALSE(V(a) == mapped);
+}
+
+TEST(packed_vector_view_test, const_iterator_and_get_int)
+{
+    using V = packed_vector_view<>;
+    static_assert(std::same_as<V::const_iterator, sdsl::random_access_const_iterator<V>>);
+    EXPECT_TRUE(V().empty());
+    for (uint8_t width : {1, 13, 64})
+    {
+        for (uint64_t size : {0, 1, 63, 64, 65, 129})
         {
-            sdsl::int_vector<8> text(size);
-            std::geometric_distribution<unsigned> symbol(0.3);
-            for (auto && c : text)
-                c = 1 + symbol(rng) % sigma;
-            view_wt_huff built(text.begin(), text.end());
-            std::ostringstream ref_out, built_out;
-            sdsl::wt_huff<>(text.begin(), text.end()).serialize(ref_out);
-            built.serialize(built_out);
-            ASSERT_EQ(ref_out.str(), built_out.str());
-            check_wt(text, built);
-            for (size_t prefix : {0, 5})
+            sdsl::int_vector<> values(size, 0, width);
+            for (uint64_t i = 0; i < size; ++i)
+                values[i] = (i * 0x9e3779b97f4a7c15ULL) ^ (i >> 2);
+            auto const payload = ((values.bit_size() + 63) / 64) * 8;
+            for (size_t offset : {0, 3})
             {
-                std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
-                view_wt_huff mapped, copied;
-                {
-                    sdsl::shared_mapper_ifstream in(file, std::ios::binary);
-                    in.seekg(prefix);
-                    mapped.load(in);
-                    ASSERT_TRUE(in);
-                }
-                {
-                    std::ifstream in(file, std::ios::binary);
-                    in.seekg(prefix);
-                    copied.load(in);
-                }
-                std::remove(file.c_str());
-                check_wt(text, mapped);
-                check_wt(text, copied);
-                std::ostringstream a;
-                mapped.serialize(a);
-                EXPECT_EQ(ref_out.str(), a.str());
-                view_wt_huff copy(mapped);
-                view_wt_huff moved(std::move(mapped));
-                mapped = view_wt_huff();
-                check_wt(text, copy);
-                check_wt(text, moved);
+                auto bytes = std::make_shared<std::vector<std::byte>>(offset + payload);
+                if (payload)
+                    std::memcpy(bytes->data() + offset, values.data(), payload);
+                auto view = V::from_bytes(bytes, std::span(*bytes).subspan(offset), values.bit_size(), width);
+                EXPECT_EQ(view.empty(), size == 0);
+                ASSERT_EQ(view.end() - view.begin(), ptrdiff_t(size));
+                EXPECT_TRUE(std::equal(view.begin(), view.end(), values.begin()));
+                for (uint64_t bit = 0; bit < values.bit_size(); ++bit)
+                    for (uint8_t length = 1; length <= std::min<uint64_t>(64, values.bit_size() - bit); ++length)
+                        ASSERT_EQ(values.get_int(bit, length), view.get_int(bit, length));
             }
         }
     }
 }
 
-// Load an integer vector type with view storage from a mapped and a plain
-// stream at several byte offsets. Its serialization must equal that of `Owned`.
-template <class Vector, class Owned>
-void check_int_vector_storage(std::string const & file, std::vector<uint64_t> const & values)
-{
-    Vector built(values);
-    std::ostringstream ref_out, built_out;
-    Owned(values).serialize(ref_out);
-    built.serialize(built_out);
-    ASSERT_EQ(ref_out.str(), built_out.str());
-    auto check = [&](Vector const & v) {
-        ASSERT_EQ(values.size(), v.size());
-        for (size_t i = 0; i < values.size(); ++i)
-            ASSERT_EQ(values[i], v[i]);
-    };
-    check(built);
-    for (size_t prefix : {0, 1, 4, 8})
-    {
-        std::ofstream(file, std::ios::binary) << std::string(prefix, 'x') << ref_out.str();
-        Vector mapped, copied;
-        {
-            sdsl::shared_mapper_ifstream in(file, std::ios::binary);
-            in.seekg(prefix);
-            mapped.load(in);
-            ASSERT_TRUE(in);
-            ASSERT_EQ(prefix + ref_out.str().size(), static_cast<size_t>(in.tellg()));
-        }
-        {
-            std::ifstream in(file, std::ios::binary);
-            in.seekg(prefix);
-            copied.load(in);
-        }
-        std::remove(file.c_str());
-        check(mapped);
-        check(copied);
-        std::ostringstream a;
-        mapped.serialize(a);
-        EXPECT_EQ(ref_out.str(), a.str());
-        Vector copy(mapped);
-        Vector moved(std::move(mapped));
-        mapped = Vector();
-        check(copy);
-        check(moved);
-    }
-}
-
-template <class Check>
-void for_each_values(Check check)
-{
-    std::mt19937_64 rng(11);
-    for (size_t size : {0, 1, 127, 128, 129, 10000})
-    {
-        for (int bits : {1, 7, 40, 63})
-        {
-            std::vector<uint64_t> values(size);
-            for (auto & x : values)
-                x = rng() >> (64 - bits);
-            check(values);
-        }
-    }
-}
-
-TEST_F(mapped_storage_test, vlc_view_storage)
-{
-    for_each_values([&](std::vector<uint64_t> const & values) {
-        using coder = sdsl::coder::elias_delta<>;
-        check_int_vector_storage<sdsl::vlc_vector<coder, 128, 0, packed_vector_view>, sdsl::vlc_vector<>>(file, values);
-        check_int_vector_storage<sdsl::vlc_vector<coder, 16, 0, packed_vector_view>, sdsl::vlc_vector<coder, 16>>(
-            file, values);
-    });
-}
-
-TEST_F(mapped_storage_test, dac_dp_view_storage)
-{
-    for_each_values([&](std::vector<uint64_t> const & values) {
-        check_int_vector_storage<sdsl::dac_vector_dp<packed_vector_view<1>, 64, packed_vector_view>,
-                                 sdsl::dac_vector_dp<>>(file, values);
-        check_int_vector_storage<sdsl::dac_vector_dp<sdsl::bit_vector, 2, packed_vector_view>,
-                                 sdsl::dac_vector_dp<sdsl::bit_vector, 2>>(file, values);
-    });
-}
-
 } // namespace
+
+int main(int argc, char ** argv)
+{
+    ::testing::InitGoogleTest(&argc, argv);
+    if (argc < 2)
+    {
+        // LCOV_EXCL_START
+        std::cout << "Usage: " << argv[0] << " tmp_dir" << std::endl;
+        return 1;
+        // LCOV_EXCL_STOP
+    }
+    temp_dir = argv[1];
+    return RUN_ALL_TESTS();
+}
