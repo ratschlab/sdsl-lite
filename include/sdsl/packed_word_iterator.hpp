@@ -18,7 +18,6 @@ class packed_word_iterator
     std::byte const * p_ = nullptr;
 
 public:
-    packed_word_iterator() = default; // fork
     explicit packed_word_iterator(std::byte const * p) : p_(p)
     {}
     uint64_t operator*() const
@@ -42,25 +41,11 @@ public:
         ++*this;
         return v;
     }
-    // Fork: the remaining random-access operations, used by MetaGraph.
-    packed_word_iterator & operator--()
-    {
-        p_ -= 8;
-        return *this;
-    }
+    // Fork: used by elias_delta::decode over view-backed vlc_vector.
     packed_word_iterator & operator+=(ptrdiff_t n)
     {
         p_ += n * 8;
         return *this;
-    }
-    packed_word_iterator & operator-=(ptrdiff_t n)
-    {
-        p_ -= n * 8;
-        return *this;
-    }
-    friend ptrdiff_t operator-(packed_word_iterator a, packed_word_iterator b)
-    {
-        return (a.p_ - b.p_) / 8;
     }
     friend packed_word_iterator operator+(packed_word_iterator p, ptrdiff_t n)
     {
